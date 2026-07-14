@@ -5,6 +5,31 @@ type RuntimeEnv = { GROQ_API_KEY?: string; DB?: D1Database };
 
 const knowledge = `A Nexo Serviços realiza instalação, manutenção preventiva e corretiva de equipamentos comerciais. Atendimento: segunda a sexta, 8h às 18h. Visitas são confirmadas após análise de disponibilidade. Orçamentos são personalizados e não há autorização para prometer descontos.`;
 
+function normalizeMeetingTime(value: string) {
+  const match = value.match(/(?:\b(?:as|às|a|para)\s*)?(\d{1,2})(?:[:h]\s*(\d{2}))?\s*(?:h|horas)?\b/i);
+  if (!match) return undefined;
+  const hour = Number(match[1]);
+  if (!Number.isFinite(hour) || hour < 6 || hour > 22) return undefined;
+  const minute = match[2] ? Number(match[2]) : 0;
+  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return undefined;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function createDemoScheduleAction(content: string) {
+  const looksLikeSchedule = /agend|reuni|visita|manuten|hor[aá]rio|dispon|confirm|amanh/i.test(content);
+  const requestedTime = normalizeMeetingTime(content);
+  if (!looksLikeSchedule || !requestedTime) return null;
+
+  return {
+    type: "SCHEDULE_VISIT",
+    payload: {
+      requested_time: requestedTime,
+      requested_date: /amanh/i.test(content) ? "Amanhã" : "Data a confirmar",
+      service: "Manutenção preventiva",
+    },
+  };
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as { messages?: ChatMessage[]; customerId?: string };
@@ -20,10 +45,19 @@ export async function POST(request: Request) {
       ]);
     }
     if (!runtime.GROQ_API_KEY) {
+      const demoAction = createDemoScheduleAction(messages.at(-1)?.content ?? "");
+      if (demoAction) {
+        return Response.json({
+          message: `Perfeito, vou consultar a disponibilidade da equipe para ${demoAction.payload.requested_date.toLowerCase()} às ${demoAction.payload.requested_time} e já te retorno com a confirmação.`,
+          demo: true,
+          meta: { intent: "agendar_visita", confidence: 0.95, handoff: false, action: demoAction },
+        });
+      }
+
       return Response.json({
         message: "Claro! Me conta um pouquinho do que você precisa e eu te ajudo por aqui.",
         demo: true,
-        meta: { intent: "iniciar_atendimento", confidence: 1, handoff: false },
+        meta: { intent: "iniciar_atendimento", confidence: 1, handoff: false, action: { type: "NONE", payload: {} } },
       });
     }
 

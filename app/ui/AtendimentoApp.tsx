@@ -3,6 +3,19 @@
 import { FormEvent, useMemo, useState } from "react";
 
 type Message = { id: number; role: "user" | "assistant"; text: string; time: string };
+type ChatAction = { type?: string; payload?: Record<string, unknown> };
+type ChatResponse = { message?: string; meta?: { action?: ChatAction } };
+type MeetingStatus = "pending" | "confirmed" | "reschedule";
+type MeetingRequest = {
+  id: number;
+  customerName: string;
+  service: string;
+  requestedDate: string;
+  requestedTime: string;
+  createdAt: string;
+  status: MeetingStatus;
+  teamNote?: string;
+};
 
 const conversations = [
   { initials: "JA", name: "João Almeida", subject: "Agendamento de manutenção", time: "Agora", status: "Em atendimento", active: true },
@@ -20,9 +33,61 @@ const initialMessages: Message[] = [
 
 function Logo() { return <span className="logoMark">N</span>; }
 
+function readPayloadText(payload: Record<string, unknown> | undefined, keys: string[]) {
+  for (const key of keys) {
+    const value = payload?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function normalizeMeetingTime(value?: string) {
+  if (!value) return undefined;
+  const match = value.match(/(?:\b(?:as|às|a|para)\s*)?(\d{1,2})(?:[:h]\s*(\d{2}))?\s*(?:h|horas)?\b/i);
+  if (!match) return undefined;
+  const hour = Number(match[1]);
+  if (!Number.isFinite(hour) || hour < 6 || hour > 22) return undefined;
+  const minute = match[2] ? Number(match[2]) : 0;
+  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return undefined;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function createMeetingRequest(text: string, action: ChatAction | undefined, createdAt: string): MeetingRequest | null {
+  const payload = action?.payload;
+  const actionSchedulesVisit = action?.type === "SCHEDULE_VISIT";
+  const looksLikeSchedule = /agend|reuni|visita|manuten|hor[aá]rio|dispon|confirm|amanh/i.test(text);
+  if (!actionSchedulesVisit && !looksLikeSchedule) return null;
+
+  const payloadTime = readPayloadText(payload, ["requestedTime", "requested_time", "time", "hora", "horario"]);
+  const requestedTime = normalizeMeetingTime(payloadTime) ?? normalizeMeetingTime(text);
+  if (!requestedTime && !actionSchedulesVisit) return null;
+
+  return {
+    id: Date.now(),
+    customerName: "João Almeida",
+    service: readPayloadText(payload, ["service", "servico", "subject"]) ?? "Manutenção preventiva",
+    requestedDate: readPayloadText(payload, ["requestedDate", "requested_date", "date", "data"]) ?? (/amanh/i.test(text) ? "Amanhã" : "Data a confirmar"),
+    requestedTime: requestedTime ?? "a confirmar",
+    createdAt,
+    status: "pending",
+  };
+}
+
+function mergeMeetingRequest(current: MeetingRequest | null, next: MeetingRequest) {
+  if (!current || current.status !== "pending") return next;
+  return { ...current, ...next, id: current.id, status: current.status };
+}
+
+function meetingStatusText(status: MeetingStatus) {
+  if (status === "confirmed") return "Equipe disponível";
+  if (status === "reschedule") return "Novo horário solicitado";
+  return "Aguardando equipe";
+}
+
 export function AtendimentoApp() {
   const [view, setView] = useState<"customer" | "admin">("customer");
   const [messages, setMessages] = useState(initialMessages);
+  const [meetingRequest, setMeetingRequest] = useState<MeetingRequest | null>(null);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -33,9 +98,13 @@ export function AtendimentoApp() {
     const now = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
     const next = [...messages, { id: Date.now(), role: "user" as const, text: value, time: now }];
     setMessages(next); setText(""); setLoading(true);
+    const localMeetingRequest = createMeetingRequest(value, undefined, now);
+    if (localMeetingRequest) setMeetingRequest(current => mergeMeetingRequest(current, localMeetingRequest));
     try {
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customerId: "joao-almeida", messages: next.map(m => ({ role: m.role, content: m.text })) }) });
-      const data = await response.json() as { message?: string };
+      const data = await response.json() as ChatResponse;
+      const apiMeetingRequest = createMeetingRequest(value, data.meta?.action, now);
+      if (apiMeetingRequest) setMeetingRequest(current => mergeMeetingRequest(current, apiMeetingRequest));
       setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: data.message ?? "Vou verificar isso para você.", time: now }]);
     } catch {
       setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: "Tive um imprevisto por aqui. Pode me mandar sua mensagem mais uma vez?", time: now }]);
@@ -47,7 +116,7 @@ export function AtendimentoApp() {
       <button className={view === "customer" ? "selected" : ""} onClick={() => setView("customer")}>Visão do cliente</button>
       <button className={view === "admin" ? "selected" : ""} onClick={() => setView("admin")}>Painel da equipe</button>
     </div>
-    {view === "customer" ? <CustomerPhone messages={messages} text={text} setText={setText} send={send} loading={loading} /> : <AdminPanel messages={messages} />}
+    {view === "customer" ? <CustomerPhone messages={messages} text={text} setText={setText} send={send} loading={loading} /> : <AdminPanel messages={messages} meetingRequest={meetingRequest} onMeetingStatus={(status, teamNote) => setMeetingRequest(current => current ? { ...current, status, teamNote } : current)} />}
   </main>;
 }
 
@@ -82,16 +151,18 @@ function CustomerPhone({ messages, text, setText, send, loading }: { messages: M
   </section>;
 }
 
-function AdminPanel({ messages }: { messages: Message[] }) {
+function AdminPanel({ messages, meetingRequest, onMeetingStatus }: { messages: Message[]; meetingRequest: MeetingRequest | null; onMeetingStatus: (status: MeetingStatus, teamNote: string) => void }) {
   const score = useMemo(() => Math.min(98, 86 + messages.length), [messages]);
+  const pendingMeeting = meetingRequest?.status === "pending";
   return <section className="adminShell">
+    {meetingRequest && <AvailabilityPopup request={meetingRequest} onConfirm={() => onMeetingStatus("confirmed", `Carla confirmou disponibilidade para ${meetingRequest.requestedDate.toLowerCase()} às ${meetingRequest.requestedTime}.`)} onReschedule={() => onMeetingStatus("reschedule", "A equipe pediu que a IA ofereça 10:00 ou 11:00 ao cliente antes de confirmar.")} />}
     <aside className="sidebar">
       <div className="sidebarBrand"><Logo/><strong>Nexo</strong></div>
       <nav><span className="navTitle">ESPAÇO DE TRABALHO</span><button>⌂ <span>Visão geral</span></button><button className="active">◉ <span>Atendimentos</span><b>12</b></button><button>♙ <span>Clientes</span></button><button>▣ <span>Base de conhecimento</span></button><span className="navTitle">GESTÃO</span><button>◫ <span>Relatórios</span></button><button>⚙ <span>Configurações</span></button></nav>
       <div className="agentCard"><div className="agentAvatar">CM<i/></div><div><strong>Carla Mendes</strong><span>Administradora</span></div><button>⋮</button></div>
     </aside>
     <div className="adminMain">
-      <header className="topbar"><div><h2>Atendimentos</h2><p>Acompanhe e gerencie todas as conversas</p></div><div className="topActions"><button className="searchBtn">⌕ <span>Buscar...</span><kbd>⌘ K</kbd></button><button className="notification">♢<i>3</i></button><button className="newBtn">＋ Novo atendimento</button></div></header>
+      <header className="topbar"><div><h2>Atendimentos</h2><p>Acompanhe e gerencie todas as conversas</p></div><div className="topActions"><button className="searchBtn">⌕ <span>Buscar...</span><kbd>⌘ K</kbd></button><button className={pendingMeeting ? "notification hasMeeting" : "notification"}>♢<i>{pendingMeeting ? 4 : 3}</i></button><button className="newBtn">＋ Novo atendimento</button></div></header>
       <div className="metrics">
         <Metric label="Em atendimento" value="12" hint="↑ 8% desde ontem" tone="teal" />
         <Metric label="Aguardando" value="7" hint="3 há mais de 10 min" tone="orange" />
@@ -108,10 +179,30 @@ function AdminPanel({ messages }: { messages: Message[] }) {
           <div className="timeline"><div className="dayPill">Hoje, 09:41</div>{messages.map(m=><div key={m.id} className={`detailMessage ${m.role}`}><div className="miniAvatar">{m.role === "assistant" ? "N" : "JA"}</div><div><span>{m.role === "assistant" ? "Nexo Assistente" : "João Almeida"} · {m.time}</span><p>{m.text}</p></div></div>)}</div>
           <div className="reply"><div><button className="active">Responder</button><button>Nota interna</button></div><textarea placeholder="Digite sua resposta..."/><footer><span>＋　⌕　☺</span><button>Enviar　➤</button></footer></div>
         </div>
-        <aside className="customerPanel"><div className="profile"><div className="profileAvatar">JA</div><h3>João Almeida</h3><p>joao@almeida.com.br</p><span>Cliente desde mar. 2024</span></div><div className="aiSummary"><div><strong>✦ Resumo inteligente</strong><span>{score}% confiança</span></div><p>Cliente recorrente da unidade de Campinas. Busca agendar manutenção preventiva para amanhã pela manhã.</p><button>Ver histórico completo →</button></div><Info title="INFORMAÇÕES"><p><span>Telefone</span><b>+55 19 99999-1234</b></p><p><span>Empresa</span><b>Almeida Comércio</b></p><p><span>Localização</span><b>Campinas, SP</b></p></Info><Info title="PREFERÊNCIAS"><div className="chips"><span>Manhã</span><span>WhatsApp</span><span>Manutenção preventiva</span></div></Info><Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>Manutenção preventiva</b><span>12 jun. 2026 · Resolvido</span></p></div><div className="history"><i/><p><b>Instalação de equipamento</b><span>03 mar. 2026 · Resolvido</span></p></div></Info></aside>
+        <aside className="customerPanel">
+          <div className="profile"><div className="profileAvatar">JA</div><h3>João Almeida</h3><p>joao@almeida.com.br</p><span>Cliente desde mar. 2024</span></div>
+          <div className="aiSummary"><div><strong>✦ Resumo inteligente</strong><span>{score}% confiança</span></div><p>Cliente recorrente da unidade de Campinas. Busca agendar manutenção preventiva para amanhã pela manhã.</p><button>Ver histórico completo →</button></div>
+          {meetingRequest && <Info title="SOLICITAÇÃO DE AGENDA"><div className="scheduleStatus"><span>{meetingStatusText(meetingRequest.status)}</span><strong>{meetingRequest.requestedDate} · {meetingRequest.requestedTime}</strong><p>{meetingRequest.teamNote ?? "IA aguardando a equipe confirmar disponibilidade."}</p></div></Info>}
+          <Info title="INFORMAÇÕES"><p><span>Telefone</span><b>+55 19 99999-1234</b></p><p><span>Empresa</span><b>Almeida Comércio</b></p><p><span>Localização</span><b>Campinas, SP</b></p></Info>
+          <Info title="PREFERÊNCIAS"><div className="chips"><span>Manhã</span><span>WhatsApp</span><span>Manutenção preventiva</span></div></Info>
+          <Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>Manutenção preventiva</b><span>12 jun. 2026 · Resolvido</span></p></div><div className="history"><i/><p><b>Instalação de equipamento</b><span>03 mar. 2026 · Resolvido</span></p></div></Info>
+        </aside>
       </div>
     </div>
   </section>;
+}
+
+function AvailabilityPopup({ request, onConfirm, onReschedule }: { request: MeetingRequest; onConfirm: () => void; onReschedule: () => void }) {
+  const answered = request.status !== "pending";
+  const timePhrase = request.requestedTime === "a confirmar" ? "com horário a confirmar" : `às ${request.requestedTime}`;
+
+  return <div className={`availabilityPopup ${request.status}`} role={answered ? "status" : "dialog"} aria-live="polite" aria-label="Notificação de disponibilidade da equipe">
+    <div className="availabilityHeader"><span className="aiBadge">IA</span><div><strong>{answered ? meetingStatusText(request.status) : "IA solicitando disponibilidade"}</strong><p>{request.customerName} · {request.createdAt}</p></div></div>
+    {answered ? <p>{request.teamNote}</p> : <p>{request.customerName} quer marcar {request.service} para {request.requestedDate.toLowerCase()} {timePhrase}. Quem da equipe está disponível nesse horário?</p>}
+    <div className="availabilityMeta"><span>Horário pedido <b>{request.requestedTime}</b></span><span>Status <b>{meetingStatusText(request.status)}</b></span></div>
+    {!answered && <div className="teamAvailability"><span><b>CM</b> Carla Mendes</span><em>Disponível</em><span><b>RO</b> Renato Oliveira</span><em>Em visita</em><span><b>LF</b> Luiza Freitas</span><em>Disponível 10:00</em></div>}
+    {!answered && <footer><button onClick={onConfirm}>Disponível às {request.requestedTime}</button><button onClick={onReschedule}>Sugerir 10:00</button></footer>}
+  </div>;
 }
 
 function Metric({label,value,hint,tone}:{label:string;value:string;hint:string;tone:string}) { return <article className="metric"><div className={`metricIcon ${tone}`}>✦</div><div><p>{label}</p><strong>{value}</strong><span>{hint}</span></div></article> }
