@@ -1,16 +1,18 @@
-# Nexo Atendimento
+# Monetera Atendimento
 
-Sistema de atendimento comercial com IA generativa, interface mobile para o cliente e painel desktop para a equipe. A aplicação usa a API da Groq, mantém o contexto da conversa e possui estrutura para memória persistente de clientes.
+Sistema de atendimento financeiro consultivo com IA generativa, interface mobile para o cliente e painel desktop para a equipe. A aplicação usa a API da Groq, mantém o contexto da conversa e possui estrutura para memória persistente de clientes empresariais.
 
 ## Funcionalidades
 
 - Chat em formato de aplicativo mobile.
 - Respostas geradas por LLM através da Groq.
 - Histórico completo enviado ao modelo a cada mensagem.
-- Prompt centralizado com personalidade, negociação e escalonamento.
+- Prompt centralizado com personalidade, negociação financeira e escalonamento.
 - Resposta estruturada em JSON.
 - Encaminhamento para atendente com motivo e prioridade.
 - Painel administrativo com fila, indicadores e detalhes do cliente.
+- Conversa inicial com cliente empresarial já contextualizado.
+- Painel da equipe recebe atualizações da conversa e solicitações de agenda.
 - Estrutura D1 para clientes, conversas e mensagens.
 - Modo demonstração quando não existe uma chave da Groq configurada.
 
@@ -128,7 +130,7 @@ Envie uma mensagem no chat. Se a resposta variar conforme o contexto, a Groq est
 
 Se aparecer repetidamente:
 
-> Claro! Me conta um pouquinho do que você precisa e eu te ajudo por aqui.
+> Claro. Me conta qual ponto financeiro você quer priorizar: crédito, empréstimo, seguro empresarial ou organização do caixa.
 
 a aplicação está no modo demonstração. Verifique se:
 

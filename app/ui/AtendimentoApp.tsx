@@ -6,7 +6,6 @@ type Message = { id: number; role: "user" | "assistant"; text: string; time: str
 type ChatAction = { type?: string; payload?: Record<string, unknown> };
 type ChatResponse = { message?: string; meta?: { action?: ChatAction } };
 type MeetingStatus = "pending" | "confirmed" | "reschedule";
-type OnboardingStep = "identity" | "need" | "active";
 type CustomerProfile = {
   name?: string;
   email?: string;
@@ -45,17 +44,28 @@ type MeetingRequest = {
   teamChoice?: string;
 };
 
-const initialMessages: Message[] = [];
-const initialProfile: CustomerProfile = { channel: "WhatsApp" };
-
-const archivedConversations = [
-  { initials: "MC", name: "Mariana Costa", subject: "Dúvida sobre orçamento", time: "4 min", status: "Aguardando", active: false },
-  { initials: "RS", name: "Rafael Souza", subject: "Equipamento com falha", time: "12 min", status: "Prioridade", active: false },
-  { initials: "LN", name: "Loja Nova Era", subject: "Proposta comercial", time: "28 min", status: "Novo", active: false },
-  { initials: "AC", name: "Ana Clara", subject: "Alteração de visita", time: "1 h", status: "Resolvido", active: false },
+const initialMessages: Message[] = [
+  { id: 1, role: "user", text: "Olá, sou Gabriel da Loja Aurora. A empresa fatura cerca de R$ 180 mil por mês e estamos organizando o caixa para expandir no próximo trimestre.", time: "09:41" },
+  { id: 2, role: "assistant", text: "Prazer, Gabriel. Entendi o contexto da Loja Aurora. Posso te ajudar a avaliar crédito PJ, empréstimos, seguros empresariais ou organização financeira. O que você quer priorizar agora?", time: "09:42" },
 ];
 
-function Logo() { return <span className="logoMark">N</span>; }
+const initialProfile: CustomerProfile = {
+  name: "Gabriel",
+  company: "Loja Aurora",
+  channel: "WhatsApp",
+  need: "Organizar o caixa para expansão no próximo trimestre",
+  summary: "Cliente empresarial já apresentado. Busca apoio financeiro para expansão.",
+  updatedAt: "09:42",
+};
+
+const archivedConversations = [
+  { initials: "MC", name: "Mariana Costa", subject: "Seguro empresarial", time: "4 min", status: "Aguardando", active: false },
+  { initials: "RS", name: "Rafael Souza", subject: "Crédito para capital de giro", time: "12 min", status: "Prioridade", active: false },
+  { initials: "LN", name: "Loja Nova Era", subject: "Antecipação de recebíveis", time: "28 min", status: "Novo", active: false },
+  { initials: "AC", name: "Ana Clara", subject: "Renovação de apólice", time: "1 h", status: "Resolvido", active: false },
+];
+
+function Logo() { return <span className="logoMark">M</span>; }
 
 function readPayloadText(payload: Record<string, unknown> | undefined, keys: string[]) {
   for (const key of keys) {
@@ -82,18 +92,14 @@ function normalizeMeetingTime(value?: string) {
 }
 
 function displayName(profile: CustomerProfile) {
-  return profile.name || profile.company || "Cliente novo";
-}
-
-function customerFirstName(profile: CustomerProfile) {
-  return displayName(profile).split(/\s+/)[0] || "cliente";
+  return profile.name || profile.company || "Cliente";
 }
 
 function profileInitials(profile: CustomerProfile) {
   const name = displayName(profile);
-  if (name === "Cliente novo") return "CN";
+  if (name === "Cliente") return "CL";
   const parts = name.split(/\s+/).filter(Boolean);
-  return ((parts[0]?.[0] ?? "C") + (parts[1]?.[0] ?? parts[0]?.[1] ?? "N")).toUpperCase();
+  return ((parts[0]?.[0] ?? "C") + (parts[1]?.[0] ?? parts[0]?.[1] ?? "L")).toUpperCase();
 }
 
 function cleanValue(value?: string) {
@@ -128,15 +134,26 @@ function extractLocation(text: string) {
 }
 
 function hasNeedSignal(text: string) {
-  return /agend|reuni|visita|manuten|or[çc]amento|pre[çc]o|instala|falha|problema|equipamento|preciso|quero|gostaria|d[úu]vida/i.test(text);
+  return /agend|reuni|consult|cr[eé]dito|emprest|seguro|ap[oó]lice|finan|caixa|capital de giro|antecipa|receb[ií]veis|cobertura|or[çc]amento|pre[çc]o|preciso|quero|gostaria|d[úu]vida/i.test(text);
 }
 
 function extractNeed(text: string) {
-  const match = text.match(/\b(?:quero|preciso|gostaria|tenho|estou com|busco)\b[^.]+/i)?.[0];
+  const match = text.match(/\b(?:quero|preciso|gostaria|tenho|estou com|busco|queria)\b[^.]+/i)?.[0];
   return cleanValue(match) ?? text;
 }
 
-function deriveCustomerUpdate(text: string, profile: CustomerProfile, step: OnboardingStep): Partial<CustomerProfile> {
+function inferServiceName(text: string, fallback?: string) {
+  const source = `${text} ${fallback ?? ""}`;
+  if (/capital de giro/i.test(source)) return "Crédito para capital de giro";
+  if (/antecipa|receb[ií]veis/i.test(source)) return "Antecipação de recebíveis";
+  if (/seguro|ap[oó]lice|cobertura/i.test(source)) return "Seguro empresarial";
+  if (/emprest/i.test(source)) return "Empréstimo empresarial";
+  if (/cr[eé]dito/i.test(source)) return "Crédito PJ";
+  if (/caixa|finan|expans[aã]o/i.test(source)) return "Consultoria financeira";
+  return fallback && fallback.length < 64 ? fallback : "Consultoria financeira";
+}
+
+function deriveCustomerUpdate(text: string, profile: CustomerProfile): Partial<CustomerProfile> {
   const update: Partial<CustomerProfile> = {};
   const name = !profile.name ? extractName(text) : undefined;
   const email = !profile.email ? extractEmail(text) : undefined;
@@ -149,20 +166,20 @@ function deriveCustomerUpdate(text: string, profile: CustomerProfile, step: Onbo
   if (phone) update.phone = phone;
   if (company) update.company = company;
   if (location) update.location = location;
-  if ((step === "need" || hasNeedSignal(text)) && text.length > 8) update.need = extractNeed(text);
+  if (hasNeedSignal(text) && text.length > 8) update.need = extractNeed(text);
   return update;
 }
 
 function createProfileSummary(profile: CustomerProfile) {
-  if (!profile.need && !profile.name && !profile.company) return "Novo atendimento aguardando primeira mensagem do cliente.";
-  const who = profile.name ? `${profile.name}${profile.company ? `, ${profile.company}` : ""}` : profile.company ?? "Cliente novo";
-  return `${who}. ${profile.need ? `Necessidade informada: ${profile.need}` : "Dados iniciais em coleta."}`;
+  if (!profile.need && !profile.name && !profile.company) return "Cliente empresarial em atendimento.";
+  const who = profile.name ? `${profile.name}${profile.company ? `, ${profile.company}` : ""}` : profile.company ?? "Cliente";
+  return `${who}. ${profile.need ? `Necessidade informada: ${profile.need}` : "Dados de contexto em acompanhamento."}`;
 }
 
 function createMeetingRequest(text: string, action: ChatAction | undefined, createdAt: string, profile: CustomerProfile): MeetingRequest | null {
   const payload = action?.payload;
   const actionSchedulesVisit = action?.type === "SCHEDULE_VISIT";
-  const looksLikeSchedule = /agend|reuni|visita|manuten|hor[aá]rio|dispon|confirm|amanh/i.test(text);
+  const looksLikeSchedule = /agend|reuni|consult|cr[eé]dito|emprest|seguro|hor[aá]rio|dispon|confirm|amanh/i.test(text);
   if (!actionSchedulesVisit && !looksLikeSchedule) return null;
 
   const payloadTime = readPayloadText(payload, ["requestedTime", "requested_time", "time", "hora", "horario"]);
@@ -172,7 +189,7 @@ function createMeetingRequest(text: string, action: ChatAction | undefined, crea
   return {
     id: Date.now(),
     customerName: displayName(profile),
-    service: readPayloadText(payload, ["service", "servico", "subject"]) ?? profile.need ?? "Atendimento técnico",
+    service: readPayloadText(payload, ["service", "servico", "subject"]) ?? inferServiceName(text, profile.need),
     requestedDate: readPayloadText(payload, ["requestedDate", "requested_date", "date", "data"]) ?? (/amanh/i.test(text) ? "Amanhã" : "Data a confirmar"),
     requestedTime: requestedTime ?? "a confirmar",
     createdAt,
@@ -216,13 +233,13 @@ function fallbackTeamAvailabilityMessage(event: TeamAvailabilityEvent) {
   return `${firstName}, conferi com a equipe e o horário disponível escolhido foi ${event.selectedTime}. Esse horário funciona para você?`;
 }
 
-function createLiveConversation(profile: CustomerProfile, messages: Message[], step: OnboardingStep) {
+function createLiveConversation(profile: CustomerProfile, messages: Message[]) {
   return {
     initials: profileInitials(profile),
     name: displayName(profile),
-    subject: profile.need || (messages.length ? "Conhecendo o cliente" : "Novo atendimento em branco"),
+    subject: profile.need || (messages.length ? "Atendimento financeiro" : "Conversa empresarial"),
     time: messages.length ? "Agora" : "Novo",
-    status: step === "active" ? "Em atendimento" : "Conhecendo cliente",
+    status: "Em atendimento",
     active: true,
   };
 }
@@ -232,7 +249,6 @@ export function AtendimentoApp() {
   const [messages, setMessages] = useState(initialMessages);
   const [customerProfile, setCustomerProfile] = useState<CustomerProfile>(initialProfile);
   const [customerId] = useState(() => `lead-${Date.now()}`);
-  const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>("identity");
   const [meetingRequest, setMeetingRequest] = useState<MeetingRequest | null>(null);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
@@ -253,10 +269,8 @@ export function AtendimentoApp() {
 
     const now = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
     const next = [...messages, { id: Date.now(), role: "user" as const, text: value, time: now }];
-    const profileUpdate = deriveCustomerUpdate(value, customerProfile, onboardingStep);
+    const profileUpdate = deriveCustomerUpdate(value, customerProfile);
     const updatedProfile = { ...customerProfile, ...profileUpdate, updatedAt: now };
-    const hasIdentity = Boolean(updatedProfile.name || updatedProfile.email || updatedProfile.phone || updatedProfile.company);
-    const hasNeed = Boolean(updatedProfile.need);
     const localMeetingRequest = createMeetingRequest(value, undefined, now, updatedProfile);
 
     setMessages(next);
@@ -265,40 +279,6 @@ export function AtendimentoApp() {
     setLoading(true);
     if (localMeetingRequest) setMeetingRequest(current => mergeMeetingRequest(current, localMeetingRequest));
     saveCustomerUpdate(updatedProfile, value);
-
-    if (onboardingStep === "identity") {
-      let reply: string;
-      let nextStep: OnboardingStep = "identity";
-
-      if (!hasIdentity) {
-        reply = "Oi! Para eu abrir seu atendimento direitinho, me diga seu nome, empresa e melhor contato.";
-      } else if (hasNeed) {
-        nextStep = "active";
-        reply = localMeetingRequest
-          ? `Prazer, ${customerFirstName(updatedProfile)}. Vou verificar a disponibilidade da equipe para ${localMeetingRequest.requestedDate.toLowerCase()} às ${localMeetingRequest.requestedTime}.`
-          : `Prazer, ${customerFirstName(updatedProfile)}. Já registrei seu pedido no painel da equipe e vou te ajudar por aqui.`;
-      } else {
-        nextStep = "need";
-        reply = `Prazer, ${customerFirstName(updatedProfile)}. Agora me conta o que você precisa resolver hoje.`;
-      }
-
-      setOnboardingStep(nextStep);
-      setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: reply, time: now }]);
-      setLoading(false);
-      return;
-    }
-
-    if (onboardingStep === "need") {
-      const nextStep: OnboardingStep = "active";
-      const reply = localMeetingRequest
-        ? `Perfeito, ${customerFirstName(updatedProfile)}. Vou verificar a disponibilidade da equipe para ${localMeetingRequest.requestedDate.toLowerCase()} às ${localMeetingRequest.requestedTime}.`
-        : `Perfeito, ${customerFirstName(updatedProfile)}. Já salvei seu pedido para a equipe acompanhar e vou seguir te ajudando por aqui.`;
-
-      setOnboardingStep(nextStep);
-      setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: reply, time: now }]);
-      setLoading(false);
-      return;
-    }
 
     try {
       const response = await fetch("/api/chat", {
@@ -313,7 +293,7 @@ export function AtendimentoApp() {
       const data = await response.json() as ChatResponse;
       const apiMeetingRequest = createMeetingRequest(value, data.meta?.action, now, updatedProfile);
       if (apiMeetingRequest) setMeetingRequest(current => mergeMeetingRequest(current, apiMeetingRequest));
-      setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: data.message ?? "Vou verificar isso para você.", time: now }]);
+      setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: data.message ?? "Vou verificar isso com a equipe da Monetera.", time: now }]);
     } catch {
       setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: "Tive um imprevisto por aqui. Pode me mandar sua mensagem mais uma vez?", time: now }]);
     } finally { setLoading(false); }
@@ -346,7 +326,7 @@ export function AtendimentoApp() {
       <button className={view === "customer" ? "selected" : ""} onClick={() => setView("customer")}>Visão do cliente</button>
       <button className={view === "admin" ? "selected" : ""} onClick={() => setView("admin")}>Painel da equipe</button>
     </div>
-    {view === "customer" ? <CustomerPhone messages={messages} text={text} setText={setText} send={send} loading={loading} /> : <AdminPanel messages={messages} customerProfile={customerProfile} onboardingStep={onboardingStep} meetingRequest={meetingRequest} onTeamAvailability={sendTeamAvailabilityEvent} />}
+    {view === "customer" ? <CustomerPhone messages={messages} text={text} setText={setText} send={send} loading={loading} /> : <AdminPanel messages={messages} customerProfile={customerProfile} meetingRequest={meetingRequest} onTeamAvailability={sendTeamAvailabilityEvent} />}
   </main>;
 }
 
@@ -359,7 +339,7 @@ function CustomerPhone({ messages, text, setText, send, loading }: { messages: M
       <header className="chatHeader">
         <button className="iconButton" aria-label="Voltar">‹</button>
         <div className="brandAvatar"><Logo /><i /></div>
-        <div className="contact"><strong>Nexo Serviços</strong><span>online agora</span></div>
+        <div className="contact"><strong>Monetera</strong><span>online agora</span></div>
         <button className="iconButton dots" aria-label="Mais opções">•••</button>
       </header>
       <div className="secureNotice"><span>◆</span> Suas informações estão protegidas</div>
@@ -377,33 +357,33 @@ function CustomerPhone({ messages, text, setText, send, loading }: { messages: M
       </form>
       <div className="homeIndicator" />
     </div>
-    <div className="customerCopy"><span className="eyebrow">ATENDIMENTO QUE CONECTA</span><h1>Conversas mais humanas.<br/><em>Relações mais fortes.</em></h1><p>Uma experiência fluida e personalizada, com memória do que realmente importa para cada cliente.</p><div className="features"><span>● Contexto preservado</span><span>● Disponível 24 horas</span><span>● Transição inteligente</span></div></div>
+    <div className="customerCopy"><span className="eyebrow">MONETERA EMPRESARIAL</span><h1>Finanças mais claras.<br/><em>Decisões mais seguras.</em></h1><p>Atendimento consultivo para empresas que buscam crédito, empréstimos, seguros e organização financeira.</p><div className="features"><span>● Crédito PJ</span><span>● Seguros empresariais</span><span>● Fluxo de caixa</span></div></div>
   </section>;
 }
 
-function AdminPanel({ messages, customerProfile, onboardingStep, meetingRequest, onTeamAvailability }: { messages: Message[]; customerProfile: CustomerProfile; onboardingStep: OnboardingStep; meetingRequest: MeetingRequest | null; onTeamAvailability: (event: TeamAvailabilityEvent) => void }) {
+function AdminPanel({ messages, customerProfile, meetingRequest, onTeamAvailability }: { messages: Message[]; customerProfile: CustomerProfile; meetingRequest: MeetingRequest | null; onTeamAvailability: (event: TeamAvailabilityEvent) => void }) {
   const score = useMemo(() => Math.min(98, 58 + messages.length * 5 + Object.values(customerProfile).filter(Boolean).length * 6), [messages.length, customerProfile]);
   const pendingMeeting = meetingRequest?.status === "pending";
-  const liveConversation = createLiveConversation(customerProfile, messages, onboardingStep);
+  const liveConversation = createLiveConversation(customerProfile, messages);
   const conversations = [liveConversation, ...archivedConversations];
   const initials = profileInitials(customerProfile);
   const name = displayName(customerProfile);
-  const onlineLabel = customerProfile.location ? `Online agora · ${customerProfile.location}` : "Online agora · dados em coleta";
+  const onlineLabel = customerProfile.location ? `Online agora · ${customerProfile.location}` : "Online agora · contexto empresarial";
 
   return <section className="adminShell">
     {meetingRequest && <AvailabilityPopup request={meetingRequest} onConfirm={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "confirmed", meetingRequest.requestedTime))} onReschedule={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "reschedule", "10:00"))} />}
     <aside className="sidebar">
-      <div className="sidebarBrand"><Logo/><strong>Nexo</strong></div>
-      <nav><span className="navTitle">ESPAÇO DE TRABALHO</span><button>⌂ <span>Visão geral</span></button><button className="active">◉ <span>Atendimentos</span><b>12</b></button><button>♙ <span>Clientes</span></button><button>▣ <span>Base de conhecimento</span></button><span className="navTitle">GESTÃO</span><button>◫ <span>Relatórios</span></button><button>⚙ <span>Configurações</span></button></nav>
-      <div className="agentCard"><div className="agentAvatar">CM<i/></div><div><strong>Carla Mendes</strong><span>Administradora</span></div><button>⋮</button></div>
+      <div className="sidebarBrand"><Logo/><strong>Monetera</strong></div>
+      <nav><span className="navTitle">ESPAÇO DE TRABALHO</span><button>⌂ <span>Visão geral</span></button><button className="active">◉ <span>Atendimentos</span><b>12</b></button><button>♙ <span>Clientes</span></button><button>▣ <span>Base financeira</span></button><span className="navTitle">GESTÃO</span><button>◫ <span>Relatórios</span></button><button>⚙ <span>Configurações</span></button></nav>
+      <div className="agentCard"><div className="agentAvatar">CM<i/></div><div><strong>Carla Mendes</strong><span>Consultora</span></div><button>⋮</button></div>
     </aside>
     <div className="adminMain">
-      <header className="topbar"><div><h2>Atendimentos</h2><p>Acompanhe e gerencie todas as conversas</p></div><div className="topActions"><button className="searchBtn">⌕ <span>Buscar...</span><kbd>⌘ K</kbd></button><button className={pendingMeeting ? "notification hasMeeting" : "notification"}>♢<i>{pendingMeeting ? 4 : 3}</i></button><button className="newBtn">＋ Novo atendimento</button></div></header>
+      <header className="topbar"><div><h2>Atendimentos</h2><p>Acompanhe conversas financeiras e oportunidades empresariais</p></div><div className="topActions"><button className="searchBtn">⌕ <span>Buscar...</span><kbd>⌘ K</kbd></button><button className={pendingMeeting ? "notification hasMeeting" : "notification"}>♢<i>{pendingMeeting ? 4 : 3}</i></button><button className="newBtn">＋ Novo atendimento</button></div></header>
       <div className="metrics">
-        <Metric label="Em atendimento" value="12" hint="↑ 8% desde ontem" tone="teal" />
-        <Metric label="Aguardando" value="7" hint="3 há mais de 10 min" tone="orange" />
-        <Metric label="Resolvidos hoje" value="48" hint="↑ 12% desde ontem" tone="purple" />
-        <Metric label="Satisfação média" value="4,8" hint="de 5,0 · 127 avaliações" tone="blue" />
+        <Metric label="Créditos em análise" value="12" hint="↑ 8% desde ontem" tone="teal" />
+        <Metric label="Pendências" value="7" hint="3 aguardam documentos" tone="orange" />
+        <Metric label="Propostas hoje" value="48" hint="↑ 12% desde ontem" tone="purple" />
+        <Metric label="NPS médio" value="4,8" hint="de 5,0 · 127 avaliações" tone="blue" />
       </div>
       <div className="workspace">
         <div className="inbox">
@@ -412,16 +392,16 @@ function AdminPanel({ messages, customerProfile, onboardingStep, meetingRequest,
         </div>
         <div className="conversationDetail">
           <header><div className="avatar a0">{initials}<i/></div><div><strong>{name}</strong><span>{onlineLabel}</span></div><div className="detailActions"><button>☆</button><button>⋮</button><button className="assign">Atribuir a mim</button></div></header>
-          <div className="timeline">{messages.length === 0 ? <div className="emptyTimeline">A conversa ainda não começou. As mensagens do cliente aparecerão aqui em tempo real.</div> : <><div className="dayPill">Hoje</div>{messages.map(m=><div key={m.id} className={`detailMessage ${m.role}`}><div className="miniAvatar">{m.role === "assistant" ? "N" : initials}</div><div><span>{m.role === "assistant" ? "Nexo Assistente" : name} · {m.time}</span><p>{m.text}</p></div></div>)}</>}</div>
+          <div className="timeline">{messages.length === 0 ? <div className="emptyTimeline">A conversa ainda não começou. As mensagens do cliente aparecerão aqui em tempo real.</div> : <><div className="dayPill">Hoje</div>{messages.map(m=><div key={m.id} className={`detailMessage ${m.role}`}><div className="miniAvatar">{m.role === "assistant" ? "M" : initials}</div><div><span>{m.role === "assistant" ? "Monetera Consultora" : name} · {m.time}</span><p>{m.text}</p></div></div>)}</>}</div>
           <div className="reply"><div><button className="active">Responder</button><button>Nota interna</button></div><textarea placeholder="Digite sua resposta..."/><footer><span>＋　⌕　☺</span><button>Enviar　➤</button></footer></div>
         </div>
         <aside className="customerPanel">
-          <div className="profile"><div className="profileAvatar">{initials}</div><h3>{name}</h3><p>{customerProfile.email ?? "E-mail em coleta"}</p><span>{customerProfile.updatedAt ? `Atualizado às ${customerProfile.updatedAt}` : "Novo cliente"}</span></div>
+          <div className="profile"><div className="profileAvatar">{initials}</div><h3>{name}</h3><p>{customerProfile.email ?? "E-mail em contexto"}</p><span>{customerProfile.updatedAt ? `Atualizado às ${customerProfile.updatedAt}` : "Cliente empresarial"}</span></div>
           <div className="aiSummary"><div><strong>✦ Resumo inteligente</strong><span>{score}% confiança</span></div><p>{createProfileSummary(customerProfile)}</p><button>Ver histórico completo →</button></div>
           {meetingRequest && <Info title="SOLICITAÇÃO DE AGENDA"><div className="scheduleStatus"><span>{meetingStatusText(meetingRequest.status)}</span><strong>{meetingRequest.requestedDate} · {meetingRequest.teamChoice ?? meetingRequest.requestedTime}</strong><p>{meetingRequest.teamNote ?? "IA aguardando a equipe confirmar disponibilidade."}</p></div></Info>}
-          <Info title="INFORMAÇÕES"><p><span>Telefone</span><b>{customerProfile.phone ?? "Em coleta"}</b></p><p><span>Empresa</span><b>{customerProfile.company ?? "Em coleta"}</b></p><p><span>Localização</span><b>{customerProfile.location ?? "Em coleta"}</b></p></Info>
-          <Info title="PREFERÊNCIAS"><div className="chips"><span>{customerProfile.channel ?? "WhatsApp"}</span>{customerProfile.need && <span>{customerProfile.need.slice(0, 28)}</span>}</div></Info>
-          <Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>Novo atendimento</b><span>Sem histórico anterior nesta conversa</span></p></div></Info>
+          <Info title="INFORMAÇÕES"><p><span>Telefone</span><b>{customerProfile.phone ?? "Em contexto"}</b></p><p><span>Empresa</span><b>{customerProfile.company ?? "Em contexto"}</b></p><p><span>Localização</span><b>{customerProfile.location ?? "Em contexto"}</b></p></Info>
+          <Info title="INTERESSES"><div className="chips"><span>{customerProfile.channel ?? "WhatsApp"}</span>{customerProfile.need && <span>{customerProfile.need.slice(0, 28)}</span>}</div></Info>
+          <Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>Análise financeira</b><span>Contexto empresarial já informado</span></p></div></Info>
         </aside>
       </div>
     </div>
@@ -437,7 +417,7 @@ function AvailabilityPopup({ request, onConfirm, onReschedule }: { request: Meet
     <div className="availabilityHeader"><span className="aiBadge">IA</span><div><strong>{answered ? meetingStatusText(request.status) : "IA solicitando disponibilidade"}</strong><p>{request.customerName} · {request.createdAt}</p></div></div>
     {answered ? <p>{request.teamNote}</p> : <p>{request.customerName} quer marcar {request.service} para {request.requestedDate.toLowerCase()} {timePhrase}. Quem da equipe está disponível nesse horário?</p>}
     <div className="availabilityMeta"><span>Horário pedido <b>{request.requestedTime}</b></span><span>{answered ? "Escolha da equipe" : "Status"} <b>{answered ? teamChoice : meetingStatusText(request.status)}</b></span></div>
-    {!answered && <div className="teamAvailability"><span><b>CM</b> Carla Mendes</span><em>Disponível</em><span><b>RO</b> Renato Oliveira</span><em>Em visita</em><span><b>LF</b> Luiza Freitas</span><em>Disponível 10:00</em></div>}
+    {!answered && <div className="teamAvailability"><span><b>CM</b> Carla Mendes</span><em>Disponível</em><span><b>RO</b> Renato Oliveira</span><em>Em reunião</em><span><b>LF</b> Luiza Freitas</span><em>Disponível 10:00</em></div>}
     {!answered && <footer><button onClick={onConfirm}>Disponível às {request.requestedTime}</button><button onClick={onReschedule}>Sugerir 10:00</button></footer>}
   </div>;
 }

@@ -29,7 +29,7 @@ type TeamAvailabilityEvent = {
 };
 type RuntimeEnv = { GROQ_API_KEY?: string; DB?: D1Database };
 
-const knowledge = `A Nexo Serviços realiza instalação, manutenção preventiva e corretiva de equipamentos comerciais. Atendimento: segunda a sexta, 8h às 18h. Visitas são confirmadas após análise de disponibilidade. Orçamentos são personalizados e não há autorização para prometer descontos.`;
+const knowledge = `A Monetera apoia empresas com organização financeira, crédito PJ, empréstimos, capital de giro, antecipação de recebíveis e seguros empresariais. Atendimento consultivo: segunda a sexta, 8h às 18h. Reuniões são confirmadas após análise de disponibilidade da equipe. A consultoria não promete aprovação, taxas, limites, prazos, coberturas ou indenizações sem análise documental e comercial. Quando o cliente pedir uma solução financeira, colete apenas os dados necessários para orientar o próximo passo: objetivo, faturamento aproximado, urgência, valor desejado, prazo, garantias/documentos disponíveis e principais riscos.`;
 
 function normalizeMeetingTime(value: string) {
   const matches = value.matchAll(/\b(?:as|às|a|para)\s*(\d{1,2})(?:[:h]\s*(\d{2}))?\s*(?:h|horas)?\b|\b(\d{1,2})(?:[:h]\s*(\d{2}))\s*(?:h|horas)?\b|\b(\d{1,2})\s*(?:h|horas)\b/gi);
@@ -46,8 +46,18 @@ function normalizeMeetingTime(value: string) {
   return undefined;
 }
 
+function inferServiceName(content: string) {
+  if (/capital de giro/i.test(content)) return "Crédito para capital de giro";
+  if (/antecipa|receb[ií]veis/i.test(content)) return "Antecipação de recebíveis";
+  if (/seguro|ap[oó]lice|cobertura/i.test(content)) return "Seguro empresarial";
+  if (/emprest/i.test(content)) return "Empréstimo empresarial";
+  if (/cr[eé]dito/i.test(content)) return "Crédito PJ";
+  if (/caixa|finan|expans[aã]o/i.test(content)) return "Consultoria financeira";
+  return "Consultoria financeira";
+}
+
 function createDemoScheduleAction(content: string) {
-  const looksLikeSchedule = /agend|reuni|visita|manuten|hor[aá]rio|dispon|confirm|amanh/i.test(content);
+  const looksLikeSchedule = /agend|reuni|consult|cr[eé]dito|emprest|seguro|finan|hor[aá]rio|dispon|confirm|amanh/i.test(content);
   const requestedTime = normalizeMeetingTime(content);
   if (!looksLikeSchedule || !requestedTime) return null;
 
@@ -56,9 +66,13 @@ function createDemoScheduleAction(content: string) {
     payload: {
       requested_time: requestedTime,
       requested_date: /amanh/i.test(content) ? "Amanhã" : "Data a confirmar",
-      service: "Manutenção preventiva",
+      service: inferServiceName(content),
     },
   };
+}
+
+function looksLikeFinanceNeed(content: string) {
+  return /cr[eé]dito|emprest|seguro|ap[oó]lice|finan|caixa|capital de giro|antecipa|receb[ií]veis|faturamento|expans[aã]o|empresa|pj/i.test(content);
 }
 
 function textFromEvent(value: unknown) {
@@ -110,20 +124,20 @@ function buildTeamAvailabilityMessage(event: TeamAvailabilityEvent) {
 }
 
 function createCustomerSummary(profile?: CustomerProfile) {
-  if (!profile) return "Cliente novo em atendimento.";
-  const who = profile.name ? `${profile.name}${profile.company ? `, ${profile.company}` : ""}` : profile.company ?? "Cliente novo";
-  return `${who}. ${profile.need ? `Necessidade: ${profile.need}` : "Dados iniciais em coleta."}`;
+  if (!profile) return "Cliente empresarial em atendimento.";
+  const who = profile.name ? `${profile.name}${profile.company ? `, ${profile.company}` : ""}` : profile.company ?? "Cliente empresarial";
+  return `${who}. ${profile.need ? `Necessidade: ${profile.need}` : "Contexto financeiro em acompanhamento."}`;
 }
 
 function createCustomerMemory(profile?: CustomerProfile) {
-  if (!profile) return "Cliente novo. Colete nome, empresa, contato e necessidade antes de avançar ações.";
+  if (!profile) return "Cliente empresarial já contextualizado. Use o histórico disponível e peça somente o dado que faltar para orientar a análise financeira.";
   return [
-    profile.name ? `Nome: ${profile.name}` : "Nome ainda não informado",
+    profile.name ? `Nome: ${profile.name}` : "Nome não informado no contexto atual",
     profile.company ? `Empresa: ${profile.company}` : null,
     profile.phone ? `Telefone: ${profile.phone}` : null,
     profile.email ? `Email: ${profile.email}` : null,
     profile.location ? `Localização: ${profile.location}` : null,
-    profile.need ? `Necessidade atual: ${profile.need}` : "Necessidade ainda em descoberta",
+    profile.need ? `Necessidade atual: ${profile.need}` : "Necessidade financeira ainda em descoberta",
   ].filter(Boolean).join(". ");
 }
 
@@ -205,14 +219,22 @@ export async function POST(request: Request) {
       const demoAction = createDemoScheduleAction(messages.at(-1)?.content ?? "");
       if (demoAction) {
         return Response.json({
-          message: `Perfeito, vou consultar a disponibilidade da equipe para ${demoAction.payload.requested_date.toLowerCase()} às ${demoAction.payload.requested_time} e já te retorno com a confirmação.`,
+          message: `Perfeito, vou consultar a disponibilidade da equipe da Monetera para ${demoAction.payload.requested_date.toLowerCase()} às ${demoAction.payload.requested_time} e já te retorno com a confirmação.`,
           demo: true,
-          meta: { intent: "agendar_visita", confidence: 0.95, handoff: false, action: demoAction },
+          meta: { intent: "agendar_consultoria_financeira", confidence: 0.95, handoff: false, action: demoAction },
+        });
+      }
+
+      if (looksLikeFinanceNeed(messages.at(-1)?.content ?? "")) {
+        return Response.json({
+          message: "Entendi. Para te orientar com segurança, vou considerar objetivo, faturamento, prazo e perfil de risco antes de sugerir crédito, empréstimo, seguro ou organização de caixa. Qual dessas frentes você quer priorizar agora?",
+          demo: true,
+          meta: { intent: "orientar_solucao_financeira", confidence: 0.9, handoff: false, action: { type: "NONE", payload: {} } },
         });
       }
 
       return Response.json({
-        message: "Claro! Me conta um pouquinho do que você precisa e eu te ajudo por aqui.",
+        message: "Claro. Me conta qual ponto financeiro você quer priorizar: crédito, empréstimo, seguro empresarial ou organização do caixa.",
         demo: true,
         meta: { intent: "iniciar_atendimento", confidence: 1, handoff: false, action: { type: "NONE", payload: {} } },
       });
