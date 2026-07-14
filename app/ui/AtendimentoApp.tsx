@@ -43,6 +43,19 @@ type MeetingRequest = {
   teamNote?: string;
   teamChoice?: string;
 };
+type ConversationRecord = {
+  id: string;
+  initials: string;
+  name: string;
+  subject: string;
+  time: string;
+  status: string;
+  active: boolean;
+  tone: number;
+  profile: CustomerProfile;
+  messages: Message[];
+  readOnly?: boolean;
+};
 
 const initialMessages: Message[] = [
   { id: 1, role: "user", text: "Olá, sou Gabriel da Loja Aurora. A empresa fatura cerca de R$ 180 mil por mês e estamos organizando o caixa para expandir no próximo trimestre.", time: "09:41" },
@@ -58,11 +71,110 @@ const initialProfile: CustomerProfile = {
   updatedAt: "09:42",
 };
 
-const archivedConversations = [
-  { initials: "MC", name: "Mariana Costa", subject: "Seguro empresarial", time: "4 min", status: "Aguardando", active: false },
-  { initials: "RS", name: "Rafael Souza", subject: "Crédito para capital de giro", time: "12 min", status: "Prioridade", active: false },
-  { initials: "LN", name: "Loja Nova Era", subject: "Antecipação de recebíveis", time: "28 min", status: "Novo", active: false },
-  { initials: "AC", name: "Ana Clara", subject: "Renovação de apólice", time: "1 h", status: "Resolvido", active: false },
+const archivedConversations: ConversationRecord[] = [
+  {
+    id: "mariana-costa",
+    initials: "MC",
+    name: "Mariana Costa",
+    subject: "Seguro empresarial",
+    time: "4 min",
+    status: "Aguardando",
+    active: false,
+    tone: 1,
+    readOnly: true,
+    profile: {
+      name: "Mariana Costa",
+      company: "Costa Distribuidora",
+      phone: "11 98234-1170",
+      location: "Campinas",
+      channel: "WhatsApp",
+      need: "Avaliar seguro empresarial para estoque e equipamentos",
+      updatedAt: "16:18",
+    },
+    messages: [
+      { id: 101, role: "user", text: "Oi, quero entender seguro empresarial para minha distribuidora.", time: "16:14" },
+      { id: 102, role: "assistant", text: "Claro, Mariana. Para pensar em uma cobertura adequada, preciso entender quais bens e riscos são prioridade para a Costa Distribuidora.", time: "16:15" },
+      { id: 103, role: "user", text: "Temos estoque, computadores, uma câmara fria e recebemos fornecedores todos os dias.", time: "16:17" },
+      { id: 104, role: "assistant", text: "Perfeito. Vou registrar esse contexto para a equipe analisar cobertura de patrimônio, equipamentos e responsabilidade civil.", time: "16:18" },
+    ],
+  },
+  {
+    id: "rafael-souza",
+    initials: "RS",
+    name: "Rafael Souza",
+    subject: "Crédito para capital de giro",
+    time: "12 min",
+    status: "Prioridade",
+    active: false,
+    tone: 2,
+    readOnly: true,
+    profile: {
+      name: "Rafael Souza",
+      company: "RS Metalúrgica",
+      phone: "11 97620-4412",
+      location: "Guarulhos",
+      channel: "WhatsApp",
+      need: "Crédito para capital de giro com urgência",
+      updatedAt: "16:06",
+    },
+    messages: [
+      { id: 201, role: "user", text: "Preciso de capital de giro para pagar fornecedores ainda este mês.", time: "15:58" },
+      { id: 202, role: "assistant", text: "Entendi, Rafael. Como existe urgência, vou separar objetivo, valor aproximado e prazo desejado para a pré-análise.", time: "15:59" },
+      { id: 203, role: "user", text: "Estou considerando algo entre R$ 80 mil e R$ 120 mil, para pagar em até 18 meses.", time: "16:04" },
+      { id: 204, role: "assistant", text: "Ótimo. Vou sinalizar como prioridade para a equipe avaliar possibilidades sem prometer aprovação antes da análise.", time: "16:06" },
+    ],
+  },
+  {
+    id: "loja-nova-era",
+    initials: "LN",
+    name: "Loja Nova Era",
+    subject: "Antecipação de recebíveis",
+    time: "28 min",
+    status: "Novo",
+    active: false,
+    tone: 3,
+    readOnly: true,
+    profile: {
+      company: "Loja Nova Era",
+      phone: "21 99048-3150",
+      location: "Niterói",
+      channel: "WhatsApp",
+      need: "Antecipação de recebíveis de cartão",
+      updatedAt: "15:42",
+    },
+    messages: [
+      { id: 301, role: "user", text: "Vendemos bastante no cartão e queria entender antecipação de recebíveis.", time: "15:36" },
+      { id: 302, role: "assistant", text: "Consigo ajudar. A análise depende do volume vendido, prazo médio de recebimento e objetivo do caixa.", time: "15:37" },
+      { id: 303, role: "user", text: "A média mensal no cartão fica perto de R$ 65 mil.", time: "15:40" },
+      { id: 304, role: "assistant", text: "Registrei. A equipe pode avaliar se antecipação faz sentido frente ao custo e à necessidade de caixa.", time: "15:42" },
+    ],
+  },
+  {
+    id: "ana-clara",
+    initials: "AC",
+    name: "Ana Clara",
+    subject: "Renovação de apólice",
+    time: "1 h",
+    status: "Resolvido",
+    active: false,
+    tone: 4,
+    readOnly: true,
+    profile: {
+      name: "Ana Clara",
+      company: "Clínica Bem Viver",
+      phone: "31 99810-2204",
+      location: "Belo Horizonte",
+      channel: "WhatsApp",
+      need: "Renovação de apólice empresarial",
+      updatedAt: "14:55",
+    },
+    messages: [
+      { id: 401, role: "user", text: "Minha apólice empresarial vence no mês que vem. Quero renovar sem perder cobertura.", time: "14:41" },
+      { id: 402, role: "assistant", text: "Claro, Ana. Vou registrar a renovação e pedir para a equipe comparar as condições antes de qualquer confirmação.", time: "14:43" },
+      { id: 403, role: "user", text: "Pode considerar equipamentos médicos e responsabilidade civil.", time: "14:48" },
+      { id: 404, role: "assistant", text: "Combinado. Deixei o histórico pronto para a equipe seguir com a revisão da apólice.", time: "14:55" },
+    ],
+  },
 ];
 
 function Logo() { return <span className="logoMark">M</span>; }
@@ -233,14 +345,18 @@ function fallbackTeamAvailabilityMessage(event: TeamAvailabilityEvent) {
   return `${firstName}, conferi com a equipe e o horário disponível escolhido foi ${event.selectedTime}. Esse horário funciona para você?`;
 }
 
-function createLiveConversation(profile: CustomerProfile, messages: Message[]) {
+function createLiveConversation(profile: CustomerProfile, messages: Message[]): ConversationRecord {
   return {
+    id: "live",
     initials: profileInitials(profile),
     name: displayName(profile),
     subject: profile.need || (messages.length ? "Atendimento financeiro" : "Conversa empresarial"),
     time: messages.length ? "Agora" : "Novo",
     status: "Em atendimento",
     active: true,
+    tone: 0,
+    profile,
+    messages,
   };
 }
 
@@ -362,16 +478,21 @@ function CustomerPhone({ messages, text, setText, send, loading }: { messages: M
 }
 
 function AdminPanel({ messages, customerProfile, meetingRequest, onTeamAvailability }: { messages: Message[]; customerProfile: CustomerProfile; meetingRequest: MeetingRequest | null; onTeamAvailability: (event: TeamAvailabilityEvent) => void }) {
-  const score = useMemo(() => Math.min(98, 58 + messages.length * 5 + Object.values(customerProfile).filter(Boolean).length * 6), [messages.length, customerProfile]);
+  const [selectedConversationId, setSelectedConversationId] = useState("live");
   const pendingMeeting = meetingRequest?.status === "pending";
   const liveConversation = createLiveConversation(customerProfile, messages);
   const conversations = [liveConversation, ...archivedConversations];
-  const initials = profileInitials(customerProfile);
-  const name = displayName(customerProfile);
-  const onlineLabel = customerProfile.location ? `Online agora · ${customerProfile.location}` : "Online agora · contexto empresarial";
+  const selectedConversation = conversations.find(conversation => conversation.id === selectedConversationId) ?? liveConversation;
+  const selectedProfile = selectedConversation.profile;
+  const selectedMessages = selectedConversation.messages;
+  const selectedIsLive = selectedConversation.id === "live";
+  const score = useMemo(() => Math.min(98, 58 + selectedMessages.length * 5 + Object.values(selectedProfile).filter(Boolean).length * 6), [selectedMessages.length, selectedProfile]);
+  const initials = selectedConversation.initials;
+  const name = selectedConversation.name;
+  const onlineLabel = selectedProfile.location ? `Online agora · ${selectedProfile.location}` : "Online agora · contexto empresarial";
 
   return <section className="adminShell">
-    {meetingRequest && <AvailabilityPopup request={meetingRequest} onConfirm={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "confirmed", meetingRequest.requestedTime))} onReschedule={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "reschedule", "10:00"))} />}
+    {meetingRequest && selectedIsLive && <AvailabilityPopup request={meetingRequest} onConfirm={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "confirmed", meetingRequest.requestedTime))} onReschedule={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "reschedule", "10:00"))} />}
     <aside className="sidebar">
       <div className="sidebarBrand"><Logo/><strong>Monetera</strong></div>
       <nav><span className="navTitle">ESPAÇO DE TRABALHO</span><button>⌂ <span>Visão geral</span></button><button className="active">◉ <span>Atendimentos</span><b>12</b></button><button>♙ <span>Clientes</span></button><button>▣ <span>Base financeira</span></button><span className="navTitle">GESTÃO</span><button>◫ <span>Relatórios</span></button><button>⚙ <span>Configurações</span></button></nav>
@@ -388,20 +509,20 @@ function AdminPanel({ messages, customerProfile, meetingRequest, onTeamAvailabil
       <div className="workspace">
         <div className="inbox">
           <div className="inboxHead"><div className="tabs"><button className="active">Todos <span>24</span></button><button>Meus <span>5</span></button><button>Não atribuídos <span>7</span></button></div><div className="filters"><button>≡ Filtrar</button><button>↕ Mais recentes</button></div></div>
-          <div className="conversationList">{conversations.map((c,i)=><article className={c.active?"conversation active":"conversation"} key={`${c.name}-${i}`}><div className={`avatar a${Math.min(i,4)}`}>{c.initials}{i<4&&<i/>}</div><div className="conversationText"><div><strong>{c.name}</strong><time>{c.time}</time></div><p>{c.subject}</p><span className={`tag t${Math.min(i,4)}`}>{c.status}</span></div></article>)}</div>
+          <div className="conversationList">{conversations.map(c=><button type="button" className={c.id === selectedConversation.id ? "conversation active" : "conversation"} key={c.id} onClick={() => setSelectedConversationId(c.id)}><div className={`avatar a${c.tone}`}>{c.initials}{c.tone<4&&<i/>}</div><div className="conversationText"><div><strong>{c.name}</strong><time>{c.time}</time></div><p>{c.subject}</p><span className={`tag t${c.tone}`}>{c.status}</span></div></button>)}</div>
         </div>
         <div className="conversationDetail">
-          <header><div className="avatar a0">{initials}<i/></div><div><strong>{name}</strong><span>{onlineLabel}</span></div><div className="detailActions"><button>☆</button><button>⋮</button><button className="assign">Atribuir a mim</button></div></header>
-          <div className="timeline">{messages.length === 0 ? <div className="emptyTimeline">A conversa ainda não começou. As mensagens do cliente aparecerão aqui em tempo real.</div> : <><div className="dayPill">Hoje</div>{messages.map(m=><div key={m.id} className={`detailMessage ${m.role}`}><div className="miniAvatar">{m.role === "assistant" ? "M" : initials}</div><div><span>{m.role === "assistant" ? "Monetera Consultora" : name} · {m.time}</span><p>{m.text}</p></div></div>)}</>}</div>
-          <div className="reply"><div><button className="active">Responder</button><button>Nota interna</button></div><textarea placeholder="Digite sua resposta..."/><footer><span>＋　⌕　☺</span><button>Enviar　➤</button></footer></div>
+          <header><div className={`avatar a${selectedConversation.tone}`}>{initials}<i/></div><div><strong>{name}</strong><span>{onlineLabel}</span></div><div className="detailActions"><button>☆</button><button>⋮</button><button className="assign">Atribuir a mim</button></div></header>
+          <div className="timeline">{selectedMessages.length === 0 ? <div className="emptyTimeline">A conversa ainda não começou. As mensagens do cliente aparecerão aqui em tempo real.</div> : <><div className="dayPill">Hoje</div>{selectedMessages.map(m=><div key={m.id} className={`detailMessage ${m.role}`}><div className="miniAvatar">{m.role === "assistant" ? "M" : initials}</div><div><span>{m.role === "assistant" ? "Monetera Consultora" : name} · {m.time}</span><p>{m.text}</p></div></div>)}</>}</div>
+          {selectedConversation.readOnly ? <div className="readonlyNotice">Visualização somente leitura do histórico deste atendimento.</div> : <div className="reply"><div><button className="active">Responder</button><button>Nota interna</button></div><textarea placeholder="Digite sua resposta..."/><footer><span>＋　⌕　☺</span><button>Enviar　➤</button></footer></div>}
         </div>
         <aside className="customerPanel">
-          <div className="profile"><div className="profileAvatar">{initials}</div><h3>{name}</h3><p>{customerProfile.email ?? "E-mail em contexto"}</p><span>{customerProfile.updatedAt ? `Atualizado às ${customerProfile.updatedAt}` : "Cliente empresarial"}</span></div>
-          <div className="aiSummary"><div><strong>✦ Resumo inteligente</strong><span>{score}% confiança</span></div><p>{createProfileSummary(customerProfile)}</p><button>Ver histórico completo →</button></div>
-          {meetingRequest && <Info title="SOLICITAÇÃO DE AGENDA"><div className="scheduleStatus"><span>{meetingStatusText(meetingRequest.status)}</span><strong>{meetingRequest.requestedDate} · {meetingRequest.teamChoice ?? meetingRequest.requestedTime}</strong><p>{meetingRequest.teamNote ?? "IA aguardando a equipe confirmar disponibilidade."}</p></div></Info>}
-          <Info title="INFORMAÇÕES"><p><span>Telefone</span><b>{customerProfile.phone ?? "Em contexto"}</b></p><p><span>Empresa</span><b>{customerProfile.company ?? "Em contexto"}</b></p><p><span>Localização</span><b>{customerProfile.location ?? "Em contexto"}</b></p></Info>
-          <Info title="INTERESSES"><div className="chips"><span>{customerProfile.channel ?? "WhatsApp"}</span>{customerProfile.need && <span>{customerProfile.need.slice(0, 28)}</span>}</div></Info>
-          <Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>Análise financeira</b><span>Contexto empresarial já informado</span></p></div></Info>
+          <div className="profile"><div className="profileAvatar">{initials}</div><h3>{name}</h3><p>{selectedProfile.email ?? "E-mail em contexto"}</p><span>{selectedProfile.updatedAt ? `Atualizado às ${selectedProfile.updatedAt}` : "Cliente empresarial"}</span></div>
+          <div className="aiSummary"><div><strong>✦ Resumo inteligente</strong><span>{score}% confiança</span></div><p>{createProfileSummary(selectedProfile)}</p><button>Ver histórico completo →</button></div>
+          {meetingRequest && selectedIsLive && <Info title="SOLICITAÇÃO DE AGENDA"><div className="scheduleStatus"><span>{meetingStatusText(meetingRequest.status)}</span><strong>{meetingRequest.requestedDate} · {meetingRequest.teamChoice ?? meetingRequest.requestedTime}</strong><p>{meetingRequest.teamNote ?? "IA aguardando a equipe confirmar disponibilidade."}</p></div></Info>}
+          <Info title="INFORMAÇÕES"><p><span>Telefone</span><b>{selectedProfile.phone ?? "Em contexto"}</b></p><p><span>Empresa</span><b>{selectedProfile.company ?? "Em contexto"}</b></p><p><span>Localização</span><b>{selectedProfile.location ?? "Em contexto"}</b></p></Info>
+          <Info title="INTERESSES"><div className="chips"><span>{selectedProfile.channel ?? "WhatsApp"}</span>{selectedProfile.need && <span>{selectedProfile.need.slice(0, 28)}</span>}</div></Info>
+          <Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>{selectedConversation.subject}</b><span>{selectedConversation.readOnly ? "Histórico aberto para visualização" : "Contexto empresarial já informado"}</span></p></div></Info>
         </aside>
       </div>
     </div>
