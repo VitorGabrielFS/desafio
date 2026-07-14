@@ -1,6 +1,16 @@
 import { SYSTEM_PROMPT } from "../../lib/system-prompt";
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
+type TeamAvailabilityEvent = {
+  type: "TEAM_AVAILABILITY_SELECTED";
+  status: "confirmed" | "reschedule";
+  selectedTime: string;
+  requestedTime: string;
+  requestedDate: string;
+  service: string;
+  customerName: string;
+  teamNote: string;
+};
 type RuntimeEnv = { GROQ_API_KEY?: string; DB?: D1Database };
 
 const knowledge = `A Nexo Serviços realiza instalação, manutenção preventiva e corretiva de equipamentos comerciais. Atendimento: segunda a sexta, 8h às 18h. Visitas são confirmadas após análise de disponibilidade. Orçamentos são personalizados e não há autorização para prometer descontos.`;
@@ -30,20 +40,73 @@ function createDemoScheduleAction(content: string) {
   };
 }
 
+function textFromEvent(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readTeamAvailabilityEvent(event: unknown): TeamAvailabilityEvent | null {
+  if (!event || typeof event !== "object") return null;
+  const record = event as Record<string, unknown>;
+  const status = record.status === "confirmed" || record.status === "reschedule" ? record.status : null;
+  const selectedTime = textFromEvent(record.selectedTime);
+  const requestedTime = textFromEvent(record.requestedTime);
+  const requestedDate = textFromEvent(record.requestedDate);
+  const service = textFromEvent(record.service);
+  const customerName = textFromEvent(record.customerName);
+  const teamNote = textFromEvent(record.teamNote);
+
+  if (record.type !== "TEAM_AVAILABILITY_SELECTED" || !status || !selectedTime || !requestedTime || !requestedDate || !service || !customerName || !teamNote) {
+    return null;
+  }
+
+  return { type: "TEAM_AVAILABILITY_SELECTED", status, selectedTime, requestedTime, requestedDate, service, customerName, teamNote };
+}
+
+function buildTeamAvailabilityMessage(event: TeamAvailabilityEvent) {
+  const customerFirstName = event.customerName.split(/\s+/)[0] || event.customerName;
+  const date = event.requestedDate.toLowerCase();
+
+  if (event.status === "confirmed") {
+    return `Tudo certo, ${customerFirstName}! A equipe confirmou disponibilidade para ${date} às ${event.selectedTime}. Vou deixar esse horário encaminhado por aqui.`;
+  }
+
+  return `${customerFirstName}, conferi com a equipe e o horário disponível escolhido foi ${event.selectedTime}. Esse horário funciona para você?`;
+}
+
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { messages?: ChatMessage[]; customerId?: string };
+    const body = (await request.json()) as { messages?: ChatMessage[]; customerId?: string; event?: unknown };
     const messages = (body.messages ?? []).slice(-30);
-    if (!messages.length) return Response.json({ error: "Mensagem ausente" }, { status: 400 });
+    const teamAvailabilityEvent = readTeamAvailabilityEvent(body.event);
+    if (!messages.length && !teamAvailabilityEvent) return Response.json({ error: "Mensagem ausente" }, { status: 400 });
 
     const runtime = ((globalThis as typeof globalThis & { __NEXO_ENV?: RuntimeEnv }).__NEXO_ENV ?? process.env) as RuntimeEnv;
     const customerId = body.customerId ?? "anonymous";
     if (runtime.DB) {
-      await runtime.DB.batch([
-        runtime.DB.prepare("INSERT OR IGNORE INTO customers (id, preferences, updated_at) VALUES (?, '[]', ?)").bind(customerId, new Date().toISOString()),
-        runtime.DB.prepare("INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)").bind(`active-${customerId}`, "user", messages.at(-1)?.content ?? "", new Date().toISOString()),
-      ]);
+      const createdAt = new Date().toISOString();
+      await runtime.DB.prepare("INSERT OR IGNORE INTO customers (id, preferences, updated_at) VALUES (?, '[]', ?)").bind(customerId, createdAt).run();
+      if (messages.length) {
+        await runtime.DB.prepare("INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)").bind(`active-${customerId}`, "user", messages.at(-1)?.content ?? "", createdAt).run();
+      }
     }
+
+    if (teamAvailabilityEvent) {
+      const message = buildTeamAvailabilityMessage(teamAvailabilityEvent);
+      if (runtime.DB) {
+        await runtime.DB.prepare("INSERT INTO messages (conversation_id, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?)")
+          .bind(`active-${customerId}`, "assistant", message, JSON.stringify({ intent: "confirmar_horario_equipe", event: teamAvailabilityEvent }), new Date().toISOString()).run();
+      }
+      return Response.json({
+        message,
+        meta: {
+          intent: "confirmar_horario_equipe",
+          confidence: 1,
+          handoff: false,
+          action: { type: "SCHEDULE_VISIT", payload: { selected_time: teamAvailabilityEvent.selectedTime, requested_time: teamAvailabilityEvent.requestedTime, requested_date: teamAvailabilityEvent.requestedDate, status: teamAvailabilityEvent.status } },
+        },
+      });
+    }
+
     if (!runtime.GROQ_API_KEY) {
       const demoAction = createDemoScheduleAction(messages.at(-1)?.content ?? "");
       if (demoAction) {

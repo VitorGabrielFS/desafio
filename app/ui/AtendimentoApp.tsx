@@ -6,6 +6,16 @@ type Message = { id: number; role: "user" | "assistant"; text: string; time: str
 type ChatAction = { type?: string; payload?: Record<string, unknown> };
 type ChatResponse = { message?: string; meta?: { action?: ChatAction } };
 type MeetingStatus = "pending" | "confirmed" | "reschedule";
+type TeamAvailabilityEvent = {
+  type: "TEAM_AVAILABILITY_SELECTED";
+  status: Exclude<MeetingStatus, "pending">;
+  selectedTime: string;
+  requestedTime: string;
+  requestedDate: string;
+  service: string;
+  customerName: string;
+  teamNote: string;
+};
 type MeetingRequest = {
   id: number;
   customerName: string;
@@ -15,6 +25,7 @@ type MeetingRequest = {
   createdAt: string;
   status: MeetingStatus;
   teamNote?: string;
+  teamChoice?: string;
 };
 
 const conversations = [
@@ -84,6 +95,31 @@ function meetingStatusText(status: MeetingStatus) {
   return "Aguardando equipe";
 }
 
+function createTeamAvailabilityEvent(request: MeetingRequest, status: Exclude<MeetingStatus, "pending">, selectedTime: string): TeamAvailabilityEvent {
+  const teamNote = status === "confirmed"
+    ? `Carla confirmou disponibilidade para ${request.requestedDate.toLowerCase()} às ${selectedTime}.`
+    : `A equipe escolheu ${selectedTime} como próximo horário disponível para responder ao cliente.`;
+
+  return {
+    type: "TEAM_AVAILABILITY_SELECTED",
+    status,
+    selectedTime,
+    requestedTime: request.requestedTime,
+    requestedDate: request.requestedDate,
+    service: request.service,
+    customerName: request.customerName,
+    teamNote,
+  };
+}
+
+function fallbackTeamAvailabilityMessage(event: TeamAvailabilityEvent) {
+  const customerFirstName = event.customerName.split(" ")[0] || event.customerName;
+  if (event.status === "confirmed") {
+    return `Tudo certo, ${customerFirstName}! A equipe confirmou disponibilidade para ${event.requestedDate.toLowerCase()} às ${event.selectedTime}. Vou deixar esse horário encaminhado por aqui.`;
+  }
+  return `${customerFirstName}, conferi com a equipe e o horário disponível escolhido foi ${event.selectedTime}. Esse horário funciona para você?`;
+}
+
 export function AtendimentoApp() {
   const [view, setView] = useState<"customer" | "admin">("customer");
   const [messages, setMessages] = useState(initialMessages);
@@ -111,12 +147,33 @@ export function AtendimentoApp() {
     } finally { setLoading(false); }
   }
 
+  async function sendTeamAvailabilityEvent(event: TeamAvailabilityEvent) {
+    const now = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    setMeetingRequest(current => current ? { ...current, status: event.status, teamNote: event.teamNote, teamChoice: event.selectedTime } : current);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId: "joao-almeida",
+          event,
+          messages: messages.map(m => ({ role: m.role, content: m.text })),
+        }),
+      });
+      const data = await response.json() as ChatResponse;
+      setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: data.message ?? fallbackTeamAvailabilityMessage(event), time: now }]);
+    } catch {
+      setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: fallbackTeamAvailabilityMessage(event), time: now }]);
+    }
+  }
+
   return <main className={`app ${view}`}>
     <div className="viewSwitch" role="group" aria-label="Alternar interface">
       <button className={view === "customer" ? "selected" : ""} onClick={() => setView("customer")}>Visão do cliente</button>
       <button className={view === "admin" ? "selected" : ""} onClick={() => setView("admin")}>Painel da equipe</button>
     </div>
-    {view === "customer" ? <CustomerPhone messages={messages} text={text} setText={setText} send={send} loading={loading} /> : <AdminPanel messages={messages} meetingRequest={meetingRequest} onMeetingStatus={(status, teamNote) => setMeetingRequest(current => current ? { ...current, status, teamNote } : current)} />}
+    {view === "customer" ? <CustomerPhone messages={messages} text={text} setText={setText} send={send} loading={loading} /> : <AdminPanel messages={messages} meetingRequest={meetingRequest} onTeamAvailability={sendTeamAvailabilityEvent} />}
   </main>;
 }
 
@@ -151,11 +208,11 @@ function CustomerPhone({ messages, text, setText, send, loading }: { messages: M
   </section>;
 }
 
-function AdminPanel({ messages, meetingRequest, onMeetingStatus }: { messages: Message[]; meetingRequest: MeetingRequest | null; onMeetingStatus: (status: MeetingStatus, teamNote: string) => void }) {
+function AdminPanel({ messages, meetingRequest, onTeamAvailability }: { messages: Message[]; meetingRequest: MeetingRequest | null; onTeamAvailability: (event: TeamAvailabilityEvent) => void }) {
   const score = useMemo(() => Math.min(98, 86 + messages.length), [messages]);
   const pendingMeeting = meetingRequest?.status === "pending";
   return <section className="adminShell">
-    {meetingRequest && <AvailabilityPopup request={meetingRequest} onConfirm={() => onMeetingStatus("confirmed", `Carla confirmou disponibilidade para ${meetingRequest.requestedDate.toLowerCase()} às ${meetingRequest.requestedTime}.`)} onReschedule={() => onMeetingStatus("reschedule", "A equipe pediu que a IA ofereça 10:00 ou 11:00 ao cliente antes de confirmar.")} />}
+    {meetingRequest && <AvailabilityPopup request={meetingRequest} onConfirm={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "confirmed", meetingRequest.requestedTime))} onReschedule={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "reschedule", "10:00"))} />}
     <aside className="sidebar">
       <div className="sidebarBrand"><Logo/><strong>Nexo</strong></div>
       <nav><span className="navTitle">ESPAÇO DE TRABALHO</span><button>⌂ <span>Visão geral</span></button><button className="active">◉ <span>Atendimentos</span><b>12</b></button><button>♙ <span>Clientes</span></button><button>▣ <span>Base de conhecimento</span></button><span className="navTitle">GESTÃO</span><button>◫ <span>Relatórios</span></button><button>⚙ <span>Configurações</span></button></nav>
@@ -182,7 +239,7 @@ function AdminPanel({ messages, meetingRequest, onMeetingStatus }: { messages: M
         <aside className="customerPanel">
           <div className="profile"><div className="profileAvatar">JA</div><h3>João Almeida</h3><p>joao@almeida.com.br</p><span>Cliente desde mar. 2024</span></div>
           <div className="aiSummary"><div><strong>✦ Resumo inteligente</strong><span>{score}% confiança</span></div><p>Cliente recorrente da unidade de Campinas. Busca agendar manutenção preventiva para amanhã pela manhã.</p><button>Ver histórico completo →</button></div>
-          {meetingRequest && <Info title="SOLICITAÇÃO DE AGENDA"><div className="scheduleStatus"><span>{meetingStatusText(meetingRequest.status)}</span><strong>{meetingRequest.requestedDate} · {meetingRequest.requestedTime}</strong><p>{meetingRequest.teamNote ?? "IA aguardando a equipe confirmar disponibilidade."}</p></div></Info>}
+          {meetingRequest && <Info title="SOLICITAÇÃO DE AGENDA"><div className="scheduleStatus"><span>{meetingStatusText(meetingRequest.status)}</span><strong>{meetingRequest.requestedDate} · {meetingRequest.teamChoice ?? meetingRequest.requestedTime}</strong><p>{meetingRequest.teamNote ?? "IA aguardando a equipe confirmar disponibilidade."}</p></div></Info>}
           <Info title="INFORMAÇÕES"><p><span>Telefone</span><b>+55 19 99999-1234</b></p><p><span>Empresa</span><b>Almeida Comércio</b></p><p><span>Localização</span><b>Campinas, SP</b></p></Info>
           <Info title="PREFERÊNCIAS"><div className="chips"><span>Manhã</span><span>WhatsApp</span><span>Manutenção preventiva</span></div></Info>
           <Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>Manutenção preventiva</b><span>12 jun. 2026 · Resolvido</span></p></div><div className="history"><i/><p><b>Instalação de equipamento</b><span>03 mar. 2026 · Resolvido</span></p></div></Info>
@@ -195,11 +252,12 @@ function AdminPanel({ messages, meetingRequest, onMeetingStatus }: { messages: M
 function AvailabilityPopup({ request, onConfirm, onReschedule }: { request: MeetingRequest; onConfirm: () => void; onReschedule: () => void }) {
   const answered = request.status !== "pending";
   const timePhrase = request.requestedTime === "a confirmar" ? "com horário a confirmar" : `às ${request.requestedTime}`;
+  const teamChoice = request.teamChoice ?? request.requestedTime;
 
   return <div className={`availabilityPopup ${request.status}`} role={answered ? "status" : "dialog"} aria-live="polite" aria-label="Notificação de disponibilidade da equipe">
     <div className="availabilityHeader"><span className="aiBadge">IA</span><div><strong>{answered ? meetingStatusText(request.status) : "IA solicitando disponibilidade"}</strong><p>{request.customerName} · {request.createdAt}</p></div></div>
     {answered ? <p>{request.teamNote}</p> : <p>{request.customerName} quer marcar {request.service} para {request.requestedDate.toLowerCase()} {timePhrase}. Quem da equipe está disponível nesse horário?</p>}
-    <div className="availabilityMeta"><span>Horário pedido <b>{request.requestedTime}</b></span><span>Status <b>{meetingStatusText(request.status)}</b></span></div>
+    <div className="availabilityMeta"><span>Horário pedido <b>{request.requestedTime}</b></span><span>{answered ? "Escolha da equipe" : "Status"} <b>{answered ? teamChoice : meetingStatusText(request.status)}</b></span></div>
     {!answered && <div className="teamAvailability"><span><b>CM</b> Carla Mendes</span><em>Disponível</em><span><b>RO</b> Renato Oliveira</span><em>Em visita</em><span><b>LF</b> Luiza Freitas</span><em>Disponível 10:00</em></div>}
     {!answered && <footer><button onClick={onConfirm}>Disponível às {request.requestedTime}</button><button onClick={onReschedule}>Sugerir 10:00</button></footer>}
   </div>;
