@@ -1,6 +1,22 @@
 import { SYSTEM_PROMPT } from "../../lib/system-prompt";
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
+type CustomerProfile = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  location?: string;
+  need?: string;
+  channel?: string;
+  summary?: string;
+  updatedAt?: string;
+};
+type CustomerProfileEvent = {
+  type: "CUSTOMER_PROFILE_UPDATED";
+  profile: CustomerProfile;
+  latestMessage?: string;
+};
 type TeamAvailabilityEvent = {
   type: "TEAM_AVAILABILITY_SELECTED";
   status: "confirmed" | "reschedule";
@@ -16,13 +32,18 @@ type RuntimeEnv = { GROQ_API_KEY?: string; DB?: D1Database };
 const knowledge = `A Nexo Serviços realiza instalação, manutenção preventiva e corretiva de equipamentos comerciais. Atendimento: segunda a sexta, 8h às 18h. Visitas são confirmadas após análise de disponibilidade. Orçamentos são personalizados e não há autorização para prometer descontos.`;
 
 function normalizeMeetingTime(value: string) {
-  const match = value.match(/(?:\b(?:as|às|a|para)\s*)?(\d{1,2})(?:[:h]\s*(\d{2}))?\s*(?:h|horas)?\b/i);
-  if (!match) return undefined;
-  const hour = Number(match[1]);
-  if (!Number.isFinite(hour) || hour < 6 || hour > 22) return undefined;
-  const minute = match[2] ? Number(match[2]) : 0;
-  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return undefined;
-  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  const matches = value.matchAll(/\b(?:as|às|a|para)\s*(\d{1,2})(?:[:h]\s*(\d{2}))?\s*(?:h|horas)?\b|\b(\d{1,2})(?:[:h]\s*(\d{2}))\s*(?:h|horas)?\b|\b(\d{1,2})\s*(?:h|horas)\b/gi);
+
+  for (const match of matches) {
+    const hour = Number(match[1] ?? match[3] ?? match[5]);
+    const minuteText = match[2] ?? match[4];
+    const minute = minuteText ? Number(minuteText) : 0;
+    if (!Number.isFinite(hour) || hour < 6 || hour > 22) continue;
+    if (!Number.isFinite(minute) || minute < 0 || minute > 59) continue;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  return undefined;
 }
 
 function createDemoScheduleAction(content: string) {
@@ -42,6 +63,21 @@ function createDemoScheduleAction(content: string) {
 
 function textFromEvent(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readCustomerProfileEvent(event: unknown): CustomerProfileEvent | null {
+  if (!event || typeof event !== "object") return null;
+  const record = event as Record<string, unknown>;
+  if (record.type !== "CUSTOMER_PROFILE_UPDATED" || !record.profile || typeof record.profile !== "object") return null;
+
+  const rawProfile = record.profile as Record<string, unknown>;
+  const profile: CustomerProfile = {};
+  for (const key of ["name", "email", "phone", "company", "location", "need", "channel", "summary", "updatedAt"] as const) {
+    const value = rawProfile[key];
+    if (typeof value === "string" && value.trim()) profile[key] = value.trim();
+  }
+
+  return { type: "CUSTOMER_PROFILE_UPDATED", profile, latestMessage: textFromEvent(record.latestMessage) ?? undefined };
 }
 
 function readTeamAvailabilityEvent(event: unknown): TeamAvailabilityEvent | null {
@@ -73,12 +109,31 @@ function buildTeamAvailabilityMessage(event: TeamAvailabilityEvent) {
   return `${customerFirstName}, conferi com a equipe e o horário disponível escolhido foi ${event.selectedTime}. Esse horário funciona para você?`;
 }
 
+function createCustomerSummary(profile?: CustomerProfile) {
+  if (!profile) return "Cliente novo em atendimento.";
+  const who = profile.name ? `${profile.name}${profile.company ? `, ${profile.company}` : ""}` : profile.company ?? "Cliente novo";
+  return `${who}. ${profile.need ? `Necessidade: ${profile.need}` : "Dados iniciais em coleta."}`;
+}
+
+function createCustomerMemory(profile?: CustomerProfile) {
+  if (!profile) return "Cliente novo. Colete nome, empresa, contato e necessidade antes de avançar ações.";
+  return [
+    profile.name ? `Nome: ${profile.name}` : "Nome ainda não informado",
+    profile.company ? `Empresa: ${profile.company}` : null,
+    profile.phone ? `Telefone: ${profile.phone}` : null,
+    profile.email ? `Email: ${profile.email}` : null,
+    profile.location ? `Localização: ${profile.location}` : null,
+    profile.need ? `Necessidade atual: ${profile.need}` : "Necessidade ainda em descoberta",
+  ].filter(Boolean).join(". ");
+}
+
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { messages?: ChatMessage[]; customerId?: string; event?: unknown };
+    const body = (await request.json()) as { messages?: ChatMessage[]; customerId?: string; customerProfile?: CustomerProfile; event?: unknown };
     const messages = (body.messages ?? []).slice(-30);
+    const customerProfileEvent = readCustomerProfileEvent(body.event);
     const teamAvailabilityEvent = readTeamAvailabilityEvent(body.event);
-    if (!messages.length && !teamAvailabilityEvent) return Response.json({ error: "Mensagem ausente" }, { status: 400 });
+    if (!messages.length && !teamAvailabilityEvent && !customerProfileEvent) return Response.json({ error: "Mensagem ausente" }, { status: 400 });
 
     const runtime = ((globalThis as typeof globalThis & { __NEXO_ENV?: RuntimeEnv }).__NEXO_ENV ?? process.env) as RuntimeEnv;
     const customerId = body.customerId ?? "anonymous";
@@ -88,6 +143,45 @@ export async function POST(request: Request) {
       if (messages.length) {
         await runtime.DB.prepare("INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)").bind(`active-${customerId}`, "user", messages.at(-1)?.content ?? "", createdAt).run();
       }
+    }
+
+    if (customerProfileEvent) {
+      const profile = customerProfileEvent.profile;
+      const summary = createCustomerSummary(profile);
+      if (runtime.DB) {
+        const updatedAt = new Date().toISOString();
+        await runtime.DB.batch([
+          runtime.DB.prepare("INSERT OR IGNORE INTO conversations (id, customer_id, status, created_at, updated_at) VALUES (?, ?, 'open', ?, ?)")
+            .bind(`active-${customerId}`, customerId, updatedAt, updatedAt),
+          runtime.DB.prepare(`
+            INSERT INTO customers (id, name, email, phone, preferences, summary, last_service, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              name = excluded.name,
+              email = excluded.email,
+              phone = excluded.phone,
+              preferences = excluded.preferences,
+              summary = excluded.summary,
+              last_service = excluded.last_service,
+              updated_at = excluded.updated_at
+          `).bind(
+            customerId,
+            profile.name ?? null,
+            profile.email ?? null,
+            profile.phone ?? null,
+            JSON.stringify({ company: profile.company, location: profile.location, channel: profile.channel }),
+            summary,
+            profile.need ?? null,
+            updatedAt,
+          ),
+          runtime.DB.prepare("INSERT INTO messages (conversation_id, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?)")
+            .bind(`active-${customerId}`, "system", customerProfileEvent.latestMessage ?? "Atualização do perfil do cliente", JSON.stringify({ event: customerProfileEvent.type, profile }), updatedAt),
+        ]);
+      }
+      return Response.json({
+        ok: true,
+        meta: { intent: "atualizar_perfil_cliente", confidence: 1, handoff: false, customer_updates: profile },
+      });
     }
 
     if (teamAvailabilityEvent) {
@@ -124,7 +218,7 @@ export async function POST(request: Request) {
       });
     }
 
-    const customerMemory = "Cliente recorrente: João Almeida, unidade Campinas. Último assunto: manutenção preventiva dos equipamentos. Prefere visitas pela manhã.";
+    const customerMemory = createCustomerMemory(body.customerProfile);
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${runtime.GROQ_API_KEY}`, "Content-Type": "application/json" },

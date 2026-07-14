@@ -6,6 +6,23 @@ type Message = { id: number; role: "user" | "assistant"; text: string; time: str
 type ChatAction = { type?: string; payload?: Record<string, unknown> };
 type ChatResponse = { message?: string; meta?: { action?: ChatAction } };
 type MeetingStatus = "pending" | "confirmed" | "reschedule";
+type OnboardingStep = "identity" | "need" | "active";
+type CustomerProfile = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  location?: string;
+  need?: string;
+  channel?: string;
+  summary?: string;
+  updatedAt?: string;
+};
+type CustomerProfileEvent = {
+  type: "CUSTOMER_PROFILE_UPDATED";
+  profile: CustomerProfile;
+  latestMessage?: string;
+};
 type TeamAvailabilityEvent = {
   type: "TEAM_AVAILABILITY_SELECTED";
   status: Exclude<MeetingStatus, "pending">;
@@ -28,18 +45,14 @@ type MeetingRequest = {
   teamChoice?: string;
 };
 
-const conversations = [
-  { initials: "JA", name: "João Almeida", subject: "Agendamento de manutenção", time: "Agora", status: "Em atendimento", active: true },
+const initialMessages: Message[] = [];
+const initialProfile: CustomerProfile = { channel: "WhatsApp" };
+
+const archivedConversations = [
   { initials: "MC", name: "Mariana Costa", subject: "Dúvida sobre orçamento", time: "4 min", status: "Aguardando", active: false },
   { initials: "RS", name: "Rafael Souza", subject: "Equipamento com falha", time: "12 min", status: "Prioridade", active: false },
   { initials: "LN", name: "Loja Nova Era", subject: "Proposta comercial", time: "28 min", status: "Novo", active: false },
   { initials: "AC", name: "Ana Clara", subject: "Alteração de visita", time: "1 h", status: "Resolvido", active: false },
-];
-
-const initialMessages: Message[] = [
-  { id: 1, role: "assistant", text: "Olá, João! Que bom falar com você novamente. Vi que da última vez conversamos sobre a manutenção dos equipamentos da unidade de Campinas. Como posso ajudar hoje?", time: "09:41" },
-  { id: 2, role: "user", text: "Oi! Queria agendar a manutenção para amanhã de manhã.", time: "09:42" },
-  { id: 3, role: "assistant", text: "Claro! Amanhã de manhã funciona bem para você entre 9h e 11h? Assim já verifico essa janela com a equipe técnica.", time: "09:42" },
 ];
 
 function Logo() { return <span className="logoMark">N</span>; }
@@ -54,16 +67,99 @@ function readPayloadText(payload: Record<string, unknown> | undefined, keys: str
 
 function normalizeMeetingTime(value?: string) {
   if (!value) return undefined;
-  const match = value.match(/(?:\b(?:as|às|a|para)\s*)?(\d{1,2})(?:[:h]\s*(\d{2}))?\s*(?:h|horas)?\b/i);
-  if (!match) return undefined;
-  const hour = Number(match[1]);
-  if (!Number.isFinite(hour) || hour < 6 || hour > 22) return undefined;
-  const minute = match[2] ? Number(match[2]) : 0;
-  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return undefined;
-  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  const matches = value.matchAll(/\b(?:as|às|a|para)\s*(\d{1,2})(?:[:h]\s*(\d{2}))?\s*(?:h|horas)?\b|\b(\d{1,2})(?:[:h]\s*(\d{2}))\s*(?:h|horas)?\b|\b(\d{1,2})\s*(?:h|horas)\b/gi);
+
+  for (const match of matches) {
+    const hour = Number(match[1] ?? match[3] ?? match[5]);
+    const minuteText = match[2] ?? match[4];
+    const minute = minuteText ? Number(minuteText) : 0;
+    if (!Number.isFinite(hour) || hour < 6 || hour > 22) continue;
+    if (!Number.isFinite(minute) || minute < 0 || minute > 59) continue;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  return undefined;
 }
 
-function createMeetingRequest(text: string, action: ChatAction | undefined, createdAt: string): MeetingRequest | null {
+function displayName(profile: CustomerProfile) {
+  return profile.name || profile.company || "Cliente novo";
+}
+
+function customerFirstName(profile: CustomerProfile) {
+  return displayName(profile).split(/\s+/)[0] || "cliente";
+}
+
+function profileInitials(profile: CustomerProfile) {
+  const name = displayName(profile);
+  if (name === "Cliente novo") return "CN";
+  const parts = name.split(/\s+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? "C") + (parts[1]?.[0] ?? parts[0]?.[1] ?? "N")).toUpperCase();
+}
+
+function cleanValue(value?: string) {
+  return value?.replace(/\s+/g, " ").replace(/[.;,]+$/g, "").trim();
+}
+
+function extractName(text: string) {
+  const explicit = text.match(/\b(?:me chamo|meu nome (?:é|e)|sou)\s+([^,.;]+)/i)?.[1];
+  const raw = cleanValue(explicit);
+  if (!raw) return undefined;
+  const name = raw.split(/\s+(?:da|de|do|dos|das|e)\s+/i)[0];
+  if (/^(cliente|atendente|gerente|respons[aá]vel)$/i.test(name)) return undefined;
+  return cleanValue(name);
+}
+
+function extractCompany(text: string) {
+  const match = text.match(/\b(?:empresa|loja|cl[ií]nica|unidade|sou da|sou do|trabalho na|trabalho no|da empresa|do grupo)\s+([^,.;]+)/i)?.[1];
+  return cleanValue(match);
+}
+
+function extractEmail(text: string) {
+  return text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+}
+
+function extractPhone(text: string) {
+  return text.match(/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4}/)?.[0];
+}
+
+function extractLocation(text: string) {
+  const match = text.match(/\b(?:em|de|sou de|unidade de)\s+([A-ZÁÉÍÓÚÂÊÔÃÕÇ][^,.;]{2,40})/);
+  return cleanValue(match?.[1]);
+}
+
+function hasNeedSignal(text: string) {
+  return /agend|reuni|visita|manuten|or[çc]amento|pre[çc]o|instala|falha|problema|equipamento|preciso|quero|gostaria|d[úu]vida/i.test(text);
+}
+
+function extractNeed(text: string) {
+  const match = text.match(/\b(?:quero|preciso|gostaria|tenho|estou com|busco)\b[^.]+/i)?.[0];
+  return cleanValue(match) ?? text;
+}
+
+function deriveCustomerUpdate(text: string, profile: CustomerProfile, step: OnboardingStep): Partial<CustomerProfile> {
+  const update: Partial<CustomerProfile> = {};
+  const name = !profile.name ? extractName(text) : undefined;
+  const email = !profile.email ? extractEmail(text) : undefined;
+  const phone = !profile.phone ? extractPhone(text) : undefined;
+  const company = !profile.company ? extractCompany(text) : undefined;
+  const location = !profile.location ? extractLocation(text) : undefined;
+
+  if (name) update.name = name;
+  if (email) update.email = email;
+  if (phone) update.phone = phone;
+  if (company) update.company = company;
+  if (location) update.location = location;
+  if ((step === "need" || hasNeedSignal(text)) && text.length > 8) update.need = extractNeed(text);
+  return update;
+}
+
+function createProfileSummary(profile: CustomerProfile) {
+  if (!profile.need && !profile.name && !profile.company) return "Novo atendimento aguardando primeira mensagem do cliente.";
+  const who = profile.name ? `${profile.name}${profile.company ? `, ${profile.company}` : ""}` : profile.company ?? "Cliente novo";
+  return `${who}. ${profile.need ? `Necessidade informada: ${profile.need}` : "Dados iniciais em coleta."}`;
+}
+
+function createMeetingRequest(text: string, action: ChatAction | undefined, createdAt: string, profile: CustomerProfile): MeetingRequest | null {
   const payload = action?.payload;
   const actionSchedulesVisit = action?.type === "SCHEDULE_VISIT";
   const looksLikeSchedule = /agend|reuni|visita|manuten|hor[aá]rio|dispon|confirm|amanh/i.test(text);
@@ -75,8 +171,8 @@ function createMeetingRequest(text: string, action: ChatAction | undefined, crea
 
   return {
     id: Date.now(),
-    customerName: "João Almeida",
-    service: readPayloadText(payload, ["service", "servico", "subject"]) ?? "Manutenção preventiva",
+    customerName: displayName(profile),
+    service: readPayloadText(payload, ["service", "servico", "subject"]) ?? profile.need ?? "Atendimento técnico",
     requestedDate: readPayloadText(payload, ["requestedDate", "requested_date", "date", "data"]) ?? (/amanh/i.test(text) ? "Amanhã" : "Data a confirmar"),
     requestedTime: requestedTime ?? "a confirmar",
     createdAt,
@@ -113,33 +209,109 @@ function createTeamAvailabilityEvent(request: MeetingRequest, status: Exclude<Me
 }
 
 function fallbackTeamAvailabilityMessage(event: TeamAvailabilityEvent) {
-  const customerFirstName = event.customerName.split(" ")[0] || event.customerName;
+  const firstName = event.customerName.split(" ")[0] || event.customerName;
   if (event.status === "confirmed") {
-    return `Tudo certo, ${customerFirstName}! A equipe confirmou disponibilidade para ${event.requestedDate.toLowerCase()} às ${event.selectedTime}. Vou deixar esse horário encaminhado por aqui.`;
+    return `Tudo certo, ${firstName}! A equipe confirmou disponibilidade para ${event.requestedDate.toLowerCase()} às ${event.selectedTime}. Vou deixar esse horário encaminhado por aqui.`;
   }
-  return `${customerFirstName}, conferi com a equipe e o horário disponível escolhido foi ${event.selectedTime}. Esse horário funciona para você?`;
+  return `${firstName}, conferi com a equipe e o horário disponível escolhido foi ${event.selectedTime}. Esse horário funciona para você?`;
+}
+
+function createLiveConversation(profile: CustomerProfile, messages: Message[], step: OnboardingStep) {
+  return {
+    initials: profileInitials(profile),
+    name: displayName(profile),
+    subject: profile.need || (messages.length ? "Conhecendo o cliente" : "Novo atendimento em branco"),
+    time: messages.length ? "Agora" : "Novo",
+    status: step === "active" ? "Em atendimento" : "Conhecendo cliente",
+    active: true,
+  };
 }
 
 export function AtendimentoApp() {
   const [view, setView] = useState<"customer" | "admin">("customer");
   const [messages, setMessages] = useState(initialMessages);
+  const [customerProfile, setCustomerProfile] = useState<CustomerProfile>(initialProfile);
+  const [customerId] = useState(() => `lead-${Date.now()}`);
+  const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>("identity");
   const [meetingRequest, setMeetingRequest] = useState<MeetingRequest | null>(null);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
+
+  function saveCustomerUpdate(profile: CustomerProfile, latestMessage?: string) {
+    const event: CustomerProfileEvent = { type: "CUSTOMER_PROFILE_UPDATED", profile, latestMessage };
+    void fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customerId, event }),
+    }).catch(() => {});
+  }
 
   async function send(e: FormEvent) {
     e.preventDefault();
     const value = text.trim();
     if (!value || loading) return;
+
     const now = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
     const next = [...messages, { id: Date.now(), role: "user" as const, text: value, time: now }];
-    setMessages(next); setText(""); setLoading(true);
-    const localMeetingRequest = createMeetingRequest(value, undefined, now);
+    const profileUpdate = deriveCustomerUpdate(value, customerProfile, onboardingStep);
+    const updatedProfile = { ...customerProfile, ...profileUpdate, updatedAt: now };
+    const hasIdentity = Boolean(updatedProfile.name || updatedProfile.email || updatedProfile.phone || updatedProfile.company);
+    const hasNeed = Boolean(updatedProfile.need);
+    const localMeetingRequest = createMeetingRequest(value, undefined, now, updatedProfile);
+
+    setMessages(next);
+    setCustomerProfile(updatedProfile);
+    setText("");
+    setLoading(true);
     if (localMeetingRequest) setMeetingRequest(current => mergeMeetingRequest(current, localMeetingRequest));
+    saveCustomerUpdate(updatedProfile, value);
+
+    if (onboardingStep === "identity") {
+      let reply: string;
+      let nextStep: OnboardingStep = "identity";
+
+      if (!hasIdentity) {
+        reply = "Oi! Para eu abrir seu atendimento direitinho, me diga seu nome, empresa e melhor contato.";
+      } else if (hasNeed) {
+        nextStep = "active";
+        reply = localMeetingRequest
+          ? `Prazer, ${customerFirstName(updatedProfile)}. Vou verificar a disponibilidade da equipe para ${localMeetingRequest.requestedDate.toLowerCase()} às ${localMeetingRequest.requestedTime}.`
+          : `Prazer, ${customerFirstName(updatedProfile)}. Já registrei seu pedido no painel da equipe e vou te ajudar por aqui.`;
+      } else {
+        nextStep = "need";
+        reply = `Prazer, ${customerFirstName(updatedProfile)}. Agora me conta o que você precisa resolver hoje.`;
+      }
+
+      setOnboardingStep(nextStep);
+      setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: reply, time: now }]);
+      setLoading(false);
+      return;
+    }
+
+    if (onboardingStep === "need") {
+      const nextStep: OnboardingStep = "active";
+      const reply = localMeetingRequest
+        ? `Perfeito, ${customerFirstName(updatedProfile)}. Vou verificar a disponibilidade da equipe para ${localMeetingRequest.requestedDate.toLowerCase()} às ${localMeetingRequest.requestedTime}.`
+        : `Perfeito, ${customerFirstName(updatedProfile)}. Já salvei seu pedido para a equipe acompanhar e vou seguir te ajudando por aqui.`;
+
+      setOnboardingStep(nextStep);
+      setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: reply, time: now }]);
+      setLoading(false);
+      return;
+    }
+
     try {
-      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customerId: "joao-almeida", messages: next.map(m => ({ role: m.role, content: m.text })) }) });
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId,
+          customerProfile: updatedProfile,
+          messages: next.map(m => ({ role: m.role, content: m.text })),
+        }),
+      });
       const data = await response.json() as ChatResponse;
-      const apiMeetingRequest = createMeetingRequest(value, data.meta?.action, now);
+      const apiMeetingRequest = createMeetingRequest(value, data.meta?.action, now, updatedProfile);
       if (apiMeetingRequest) setMeetingRequest(current => mergeMeetingRequest(current, apiMeetingRequest));
       setMessages(items => [...items, { id: Date.now() + 1, role: "assistant", text: data.message ?? "Vou verificar isso para você.", time: now }]);
     } catch {
@@ -156,7 +328,8 @@ export function AtendimentoApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          customerId: "joao-almeida",
+          customerId,
+          customerProfile,
           event,
           messages: messages.map(m => ({ role: m.role, content: m.text })),
         }),
@@ -173,7 +346,7 @@ export function AtendimentoApp() {
       <button className={view === "customer" ? "selected" : ""} onClick={() => setView("customer")}>Visão do cliente</button>
       <button className={view === "admin" ? "selected" : ""} onClick={() => setView("admin")}>Painel da equipe</button>
     </div>
-    {view === "customer" ? <CustomerPhone messages={messages} text={text} setText={setText} send={send} loading={loading} /> : <AdminPanel messages={messages} meetingRequest={meetingRequest} onTeamAvailability={sendTeamAvailabilityEvent} />}
+    {view === "customer" ? <CustomerPhone messages={messages} text={text} setText={setText} send={send} loading={loading} /> : <AdminPanel messages={messages} customerProfile={customerProfile} onboardingStep={onboardingStep} meetingRequest={meetingRequest} onTeamAvailability={sendTeamAvailabilityEvent} />}
   </main>;
 }
 
@@ -191,7 +364,7 @@ function CustomerPhone({ messages, text, setText, send, loading }: { messages: M
       </header>
       <div className="secureNotice"><span>◆</span> Suas informações estão protegidas</div>
       <div className="messages">
-        <div className="dayPill">Hoje</div>
+        {messages.length > 0 && <div className="dayPill">Hoje</div>}
         {messages.map(message => <div key={message.id} className={`bubbleRow ${message.role}`}>
           <div className="bubble">{message.text}<span className="messageTime">{message.time}{message.role === "user" && "  ✓✓"}</span></div>
         </div>)}
@@ -208,9 +381,15 @@ function CustomerPhone({ messages, text, setText, send, loading }: { messages: M
   </section>;
 }
 
-function AdminPanel({ messages, meetingRequest, onTeamAvailability }: { messages: Message[]; meetingRequest: MeetingRequest | null; onTeamAvailability: (event: TeamAvailabilityEvent) => void }) {
-  const score = useMemo(() => Math.min(98, 86 + messages.length), [messages]);
+function AdminPanel({ messages, customerProfile, onboardingStep, meetingRequest, onTeamAvailability }: { messages: Message[]; customerProfile: CustomerProfile; onboardingStep: OnboardingStep; meetingRequest: MeetingRequest | null; onTeamAvailability: (event: TeamAvailabilityEvent) => void }) {
+  const score = useMemo(() => Math.min(98, 58 + messages.length * 5 + Object.values(customerProfile).filter(Boolean).length * 6), [messages.length, customerProfile]);
   const pendingMeeting = meetingRequest?.status === "pending";
+  const liveConversation = createLiveConversation(customerProfile, messages, onboardingStep);
+  const conversations = [liveConversation, ...archivedConversations];
+  const initials = profileInitials(customerProfile);
+  const name = displayName(customerProfile);
+  const onlineLabel = customerProfile.location ? `Online agora · ${customerProfile.location}` : "Online agora · dados em coleta";
+
   return <section className="adminShell">
     {meetingRequest && <AvailabilityPopup request={meetingRequest} onConfirm={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "confirmed", meetingRequest.requestedTime))} onReschedule={() => onTeamAvailability(createTeamAvailabilityEvent(meetingRequest, "reschedule", "10:00"))} />}
     <aside className="sidebar">
@@ -229,20 +408,20 @@ function AdminPanel({ messages, meetingRequest, onTeamAvailability }: { messages
       <div className="workspace">
         <div className="inbox">
           <div className="inboxHead"><div className="tabs"><button className="active">Todos <span>24</span></button><button>Meus <span>5</span></button><button>Não atribuídos <span>7</span></button></div><div className="filters"><button>≡ Filtrar</button><button>↕ Mais recentes</button></div></div>
-          <div className="conversationList">{conversations.map((c,i)=><article className={c.active?"conversation active":"conversation"} key={c.name}><div className={`avatar a${i}`}>{c.initials}{i<4&&<i/>}</div><div className="conversationText"><div><strong>{c.name}</strong><time>{c.time}</time></div><p>{c.subject}</p><span className={`tag t${i}`}>{c.status}</span></div></article>)}</div>
+          <div className="conversationList">{conversations.map((c,i)=><article className={c.active?"conversation active":"conversation"} key={`${c.name}-${i}`}><div className={`avatar a${Math.min(i,4)}`}>{c.initials}{i<4&&<i/>}</div><div className="conversationText"><div><strong>{c.name}</strong><time>{c.time}</time></div><p>{c.subject}</p><span className={`tag t${Math.min(i,4)}`}>{c.status}</span></div></article>)}</div>
         </div>
         <div className="conversationDetail">
-          <header><div className="avatar a0">JA<i/></div><div><strong>João Almeida</strong><span>Online agora · Campinas, SP</span></div><div className="detailActions"><button>☆</button><button>⋮</button><button className="assign">Atribuir a mim</button></div></header>
-          <div className="timeline"><div className="dayPill">Hoje, 09:41</div>{messages.map(m=><div key={m.id} className={`detailMessage ${m.role}`}><div className="miniAvatar">{m.role === "assistant" ? "N" : "JA"}</div><div><span>{m.role === "assistant" ? "Nexo Assistente" : "João Almeida"} · {m.time}</span><p>{m.text}</p></div></div>)}</div>
+          <header><div className="avatar a0">{initials}<i/></div><div><strong>{name}</strong><span>{onlineLabel}</span></div><div className="detailActions"><button>☆</button><button>⋮</button><button className="assign">Atribuir a mim</button></div></header>
+          <div className="timeline">{messages.length === 0 ? <div className="emptyTimeline">A conversa ainda não começou. As mensagens do cliente aparecerão aqui em tempo real.</div> : <><div className="dayPill">Hoje</div>{messages.map(m=><div key={m.id} className={`detailMessage ${m.role}`}><div className="miniAvatar">{m.role === "assistant" ? "N" : initials}</div><div><span>{m.role === "assistant" ? "Nexo Assistente" : name} · {m.time}</span><p>{m.text}</p></div></div>)}</>}</div>
           <div className="reply"><div><button className="active">Responder</button><button>Nota interna</button></div><textarea placeholder="Digite sua resposta..."/><footer><span>＋　⌕　☺</span><button>Enviar　➤</button></footer></div>
         </div>
         <aside className="customerPanel">
-          <div className="profile"><div className="profileAvatar">JA</div><h3>João Almeida</h3><p>joao@almeida.com.br</p><span>Cliente desde mar. 2024</span></div>
-          <div className="aiSummary"><div><strong>✦ Resumo inteligente</strong><span>{score}% confiança</span></div><p>Cliente recorrente da unidade de Campinas. Busca agendar manutenção preventiva para amanhã pela manhã.</p><button>Ver histórico completo →</button></div>
+          <div className="profile"><div className="profileAvatar">{initials}</div><h3>{name}</h3><p>{customerProfile.email ?? "E-mail em coleta"}</p><span>{customerProfile.updatedAt ? `Atualizado às ${customerProfile.updatedAt}` : "Novo cliente"}</span></div>
+          <div className="aiSummary"><div><strong>✦ Resumo inteligente</strong><span>{score}% confiança</span></div><p>{createProfileSummary(customerProfile)}</p><button>Ver histórico completo →</button></div>
           {meetingRequest && <Info title="SOLICITAÇÃO DE AGENDA"><div className="scheduleStatus"><span>{meetingStatusText(meetingRequest.status)}</span><strong>{meetingRequest.requestedDate} · {meetingRequest.teamChoice ?? meetingRequest.requestedTime}</strong><p>{meetingRequest.teamNote ?? "IA aguardando a equipe confirmar disponibilidade."}</p></div></Info>}
-          <Info title="INFORMAÇÕES"><p><span>Telefone</span><b>+55 19 99999-1234</b></p><p><span>Empresa</span><b>Almeida Comércio</b></p><p><span>Localização</span><b>Campinas, SP</b></p></Info>
-          <Info title="PREFERÊNCIAS"><div className="chips"><span>Manhã</span><span>WhatsApp</span><span>Manutenção preventiva</span></div></Info>
-          <Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>Manutenção preventiva</b><span>12 jun. 2026 · Resolvido</span></p></div><div className="history"><i/><p><b>Instalação de equipamento</b><span>03 mar. 2026 · Resolvido</span></p></div></Info>
+          <Info title="INFORMAÇÕES"><p><span>Telefone</span><b>{customerProfile.phone ?? "Em coleta"}</b></p><p><span>Empresa</span><b>{customerProfile.company ?? "Em coleta"}</b></p><p><span>Localização</span><b>{customerProfile.location ?? "Em coleta"}</b></p></Info>
+          <Info title="PREFERÊNCIAS"><div className="chips"><span>{customerProfile.channel ?? "WhatsApp"}</span>{customerProfile.need && <span>{customerProfile.need.slice(0, 28)}</span>}</div></Info>
+          <Info title="ATENDIMENTOS ANTERIORES"><div className="history"><i/><p><b>Novo atendimento</b><span>Sem histórico anterior nesta conversa</span></p></div></Info>
         </aside>
       </div>
     </div>
